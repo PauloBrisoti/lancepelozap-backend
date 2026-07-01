@@ -1,0 +1,50 @@
+import { hashPassword } from "../utils/password";
+import { prisma } from "../lib/prisma";
+
+async function main() {
+  const email = "admin@example.com";
+  const passwordPlain = "123456";
+
+  const existingUser = await prisma.user.findUnique({ where: { email } });
+  if (existingUser) {
+    console.log(`Usuário ${email} já existe. Ignorando.`);
+    return;
+  }
+
+  // Primeiro garantimos que existe um Tenant
+  let tenant = await prisma.store.findFirst();
+  if (!tenant) {
+    tenant = await prisma.store.create({
+      data: {
+        nomeFantasia: "Empresa Teste",
+        cnpjCpf: "00000000000100"
+      }
+    });
+    console.log(`Tenant criado: ${tenant.id}`);
+  }
+
+  const passwordHash = await hashPassword(passwordPlain);
+  const user = await prisma.user.create({
+    data: {
+      nome: "Admin",
+      email,
+      senhaHash: passwordHash,
+      role: "ADMIN",
+      storeId: tenant.id
+    }
+  });
+
+  console.log(`Usuário criado com sucesso!
+Email: ${email}
+Senha: ${passwordPlain}
+Tenant: ${tenant.nomeFantasia}`);
+}
+
+main()
+  .catch((e) => {
+    console.error(e);
+    process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });

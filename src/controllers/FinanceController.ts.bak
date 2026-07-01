@@ -1,0 +1,279 @@
+import { Request, Response } from 'express';
+import { prisma } from '../lib/prisma';
+
+export class FinanceController {
+  
+  // 1. DASHBOARD E SALDOS
+  static async getDashboard(req: Request, res: Response) {
+    try {
+      const storeId = req.user?.storeId as string;
+      if (!storeId) return res.status(401).json({ message: 'Não autorizado' });
+
+      // Saldo das carteiras
+      let wallets = await prisma.wallet.findMany({
+        where: { storeId }
+      });
+
+      // Se não tiver nenhuma carteira, cria uma padrão "Caixa Interno"
+      if (wallets.length === 0) {
+        const defaultWallet = await prisma.wallet.create({
+          data: {
+            storeId,
+            nome: 'Caixa Interno',
+            tipo: 'EMPRESA',
+            saldoAtual: 0
+          }
+        });
+        wallets = [defaultWallet];
+      }
+      
+      const saldoTotal = wallets.reduce((acc, w) => acc + Number(w.saldoAtual), 0);
+
+      // Resumo de Contas a Receber (Vencidas e a Vencer hoje)
+      const hoje = new Date();
+      hoje.setHours(0, 0, 0, 0);
+
+      const receivables = await prisma.accountReceivable.findMany({
+        where: { storeId, status: 'PENDENTE' }
+      });
+
+      let totalAtrasado = 0;
+      let totalAVencer = 0;
+
+      receivables.forEach(r => {
+        if (new Date(r.dataVencimento) < hoje) {
+          totalAtrasado += Number(r.valorParcela);
+        } else {
+          totalAVencer += Number(r.valorParcela);
+        }
+      });
+
+      return res.json({
+        saldoTotal,
+        totalAtrasado,
+        totalAVencer,
+        wallets
+      });
+    } catch (error) {
+      console.error('Erro no dashboard:', error);
+      return res.status(500).json({ message: 'Erro interno do servidor' });
+    }
+  }
+
+  // 2. TRANSAÇÕES
+  static async getTransactions(req: Request, res: Response) {
+    try {
+      const storeId = req.user?.storeId as string;
+      if (!storeId) return res.status(401).json({ message: 'Não autorizado' });
+
+      const transactions = await prisma.financialTransaction.findMany({
+        where: { storeId },
+        orderBy: { dataTransacao: 'desc' },
+        take: 50,
+        include: {
+          wallet: { select: { nome: true } }
+        }
+      });
+
+      return res.json(transactions);
+    } catch (error) {
+      console.error('Erro nas transações:', error);
+      return res.status(500).json({ message: 'Erro interno do servidor' });
+    }
+  }
+
+  static async addTransaction(req: Request, res: Response) {
+    try {
+      const storeId = req.user?.storeId as string;
+      if (!storeId) return res.status(401).json({ message: 'Não autorizado' });
+
+      const { walletId, tipo, valor, descricao, categoria, dataTransacao } = req.body;
+      
+      if (!walletId || !tipo || !valor || !descricao) {
+        return res.status(400).json({ message: 'Campos obrigatórios: walletId, tipo, valor, descricao' });
+      }
+
+      const valorNum = Number(valor);
+      const dtTransacao = dataTransacao ? new Date(dataTransacao) : new Date();
+
+      const transaction = await prisma.$transaction(async (tx) => {
+        // Registrar a transação
+        const newTx = await tx.financialTransaction.create({
+          data: {
+            storeId,
+            walletId,
+            tipo,
+            valor: valorNum,
+            descricao,
+            categoria,
+            dataTransacao: dtTransacao
+          }
+        });
+
+        // Atualizar o saldo da carteira
+        await tx.wallet.update({
+          where: { id: walletId },
+          data: {
+            saldoAtual: tipo === 'ENTRADA' 
+              ? { increment: valorNum }
+              : { decrement: valorNum }
+          }
+        });
+
+        return newTx;
+      });
+
+      return res.status(201).json(transaction);
+    } catch (error) {
+      console.error('Erro ao adicionar transação:', error);
+      return res.status(500).json({ message: 'Erro interno do servidor' });
+    }
+  }
+
+  static async updateTransaction(req: Request, res: Response) {
+    try {
+      const storeId = req.user?.storeId as string;
+      const id = req.params.id as string;
+      const { walletId, tipo, valor, descricao, categoria, dataTransacao } = req.body;
+      
+      if (!storeId) return res.status(401).json({ message: 'Não autorizado' });
+
+      // Busca a transação antiga para verificar impacto no saldo
+      const oldTx = await prisma.financialTransaction.findFirst({
+        where: { id, storeId }
+      });
+
+      if (!oldTx) {
+        return res.status(404).json({ message: 'Transação não encontrada' });
+      }
+
+      const valorNum = Number(valor);
+
+      const transaction = await prisma.$transaction(async (tx) => {
+        // Reverter impacto da transação antiga na carteira
+        await tx.wallet.update({
+          where: { id: oldTx.walletId },
+          data: {
+            saldoAtual: oldTx.tipo === 'ENTRADA' 
+              ? { decrement: oldTx.valor }
+              : { increment: oldTx.valor }
+          }
+        });
+
+        const dtTransacao = dataTransacao ? new Date(dataTransacao) : undefined;
+
+        // Atualizar transação
+        const updatedTx = await tx.financialTransaction.update({
+          where: { id },
+          data: { 
+            walletId, 
+            tipo, 
+            valor: valorNum, 
+            descricao, 
+            categoria,
+            ...(dtTransacao && { dataTransacao: dtTransacao })
+          }
+        });
+
+        // Aplicar novo impacto na nova carteira
+        await tx.wallet.update({
+          where: { id: walletId },
+          data: {
+            saldoAtual: tipo === 'ENTRADA'
+              ? { increment: valorNum }
+              : { decrement: valorNum }
+          }
+        });
+
+        return updatedTx;
+      });
+
+      return res.json(transaction);
+    } catch (error) {
+      console.error('Erro ao atualizar transação:', error);
+      return res.status(500).json({ message: 'Erro interno do servidor' });
+    }
+  }
+
+  // 3. CONTAS A RECEBER (FIADO)
+  static async getReceivables(req: Request, res: Response) {
+    try {
+      const storeId = req.user?.storeId as string;
+      if (!storeId) return res.status(401).json({ message: 'Não autorizado' });
+
+      const receivables = await prisma.accountReceivable.findMany({
+        where: { storeId },
+        orderBy: { dataVencimento: 'asc' },
+        include: {
+          customer: { select: { nomeCompleto: true } },
+          sale: { select: { id: true } }
+        }
+      });
+
+      return res.json(receivables);
+    } catch (error) {
+      console.error('Erro em getReceivables:', error);
+      return res.status(500).json({ message: 'Erro interno do servidor' });
+    }
+  }
+
+  static async payReceivable(req: Request, res: Response) {
+    try {
+      const storeId = req.user?.storeId as string;
+      if (!storeId) return res.status(401).json({ message: 'Não autorizado' });
+      
+      const id = req.params.id as string;
+      const { walletId, valorPago } = req.body;
+
+      if (!walletId) return res.status(400).json({ message: 'É necessário informar a carteira de destino (walletId)' });
+
+      const receivable = await prisma.accountReceivable.findUnique({
+        where: { id }
+      });
+
+      if (!receivable || receivable.storeId !== storeId) {
+        return res.status(404).json({ message: 'Parcela não encontrada' });
+      }
+      if (receivable.status === 'PAGO') {
+        return res.status(400).json({ message: 'Esta parcela já está paga' });
+      }
+
+      const valorFinalPago = valorPago ? Number(valorPago) : Number(receivable.valorParcela);
+
+      await prisma.$transaction(async (tx) => {
+        // 1. Dar baixa na parcela
+        await tx.accountReceivable.update({
+          where: { id },
+          data: {
+            status: 'PAGO',
+            dataPagamentoEfetivo: new Date(),
+            valorPago: valorFinalPago
+          }
+        });
+
+        // 2. Lançar a entrada na conta do cliente
+        await tx.financialTransaction.create({
+          data: {
+            storeId,
+            walletId,
+            tipo: 'ENTRADA',
+            valor: valorFinalPago,
+            descricao: `Pagamento Parcela ${receivable.numeroParcela}/${receivable.totalParcelas} - Fiado`,
+            categoria: 'Vendas'
+          }
+        });
+
+        // 3. Atualizar saldo da carteira
+        await tx.wallet.update({
+          where: { id: walletId },
+          data: { saldoAtual: { increment: valorFinalPago } }
+        });
+      });
+
+      return res.json({ message: 'Baixa realizada com sucesso' });
+    } catch (error) {
+      console.error('Erro em payReceivable:', error);
+      return res.status(500).json({ message: 'Erro interno do servidor' });
+    }
+  }
+}

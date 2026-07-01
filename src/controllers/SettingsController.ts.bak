@@ -1,0 +1,230 @@
+import { Request, Response } from 'express';
+import { prisma } from '../lib/prisma';
+import bcrypt from 'bcryptjs';
+
+export class SettingsController {
+  
+  // ==========================================
+  // CONFIGURAÇÕES DA LOJA (TENANT)
+  // ==========================================
+  
+  async getTenantSettings(req: Request, res: Response) {
+    try {
+      const storeId = req.user?.storeId as string;
+      if (!storeId) return res.status(401).json({ error: 'Não autorizado' });
+
+      const tenant = await prisma.store.findUnique({
+        where: { id: storeId }
+      });
+
+      return res.json(tenant);
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: 'Erro ao buscar configurações da loja' });
+    }
+  }
+
+  async updateTenantSettings(req: Request, res: Response) {
+    try {
+      const storeId = req.user?.storeId as string;
+      if (!storeId) return res.status(401).json({ error: 'Não autorizado' });
+      
+      // Apenas ADMIN ou SUPER_ADMIN podem editar a loja
+      if (req.user?.role !== 'ADMIN' && req.user?.role !== 'SUPER_ADMIN') {
+        return res.status(403).json({ error: 'Acesso negado' });
+      }
+
+      const { nomeFantasia, nichoPrincipal, telefoneWhatsapp, emailContato, chavePix } = req.body;
+
+      const updatedTenant = await prisma.store.update({
+        where: { id: storeId },
+        data: {
+          nomeFantasia,
+          nichoPrincipal,
+          telefoneWhatsapp,
+          emailContato,
+          chavePix
+        },
+        select: {
+          nomeFantasia: true,
+          cnpjCpf: true,
+          nichoPrincipal: true,
+          telefoneWhatsapp: true,
+          emailContato: true,
+          chavePix: true,
+          pixQrCodeUrl: true,
+        }
+      });
+
+      return res.json(updatedTenant);
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: 'Erro ao atualizar configurações da loja' });
+    }
+  }
+
+  // ==========================================
+  // GESTÃO DE EQUIPE (USUÁRIOS)
+  // ==========================================
+
+  async getUsers(req: Request, res: Response) {
+    try {
+      const storeId = req.user?.storeId as string;
+      if (!storeId) return res.status(401).json({ error: 'Não autorizado' });
+
+      const users = await prisma.user.findMany({
+        where: { storeId },
+        select: {
+          id: true,
+          nome: true,
+          email: true,
+          role: true,
+          ativo: true,
+          permiteVendaPrazo: true,
+          limiteDescontoMaximo: true,
+          createdAt: true
+        },
+        orderBy: { nome: 'asc' }
+      });
+
+      return res.json(users);
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: 'Erro ao buscar funcionários' });
+    }
+  }
+
+  async createUser(req: Request, res: Response) {
+    try {
+      const storeId = req.user?.storeId as string;
+      if (!storeId) return res.status(401).json({ error: 'Não autorizado' });
+
+      if (req.user?.role !== 'ADMIN' && req.user?.role !== 'SUPER_ADMIN') {
+        return res.status(403).json({ error: 'Acesso negado' });
+      }
+
+      const { nome, email, senha, role, permiteVendaPrazo, limiteDescontoMaximo } = req.body;
+
+      if (!nome || !email || !senha || !role) {
+        return res.status(400).json({ error: 'Preencha todos os campos obrigatórios' });
+      }
+
+      // Verifica e-mail duplicado
+      const emailExists = await prisma.user.findUnique({ where: { email } });
+      if (emailExists) {
+        return res.status(400).json({ error: 'E-mail já está em uso' });
+      }
+
+      const senhaHash = await bcrypt.hash(senha, 10);
+
+      const newUser = await prisma.user.create({
+        data: {
+          nome,
+          email,
+          senhaHash,
+          role,
+          permiteVendaPrazo: permiteVendaPrazo ?? false,
+          limiteDescontoMaximo: limiteDescontoMaximo ?? 0,
+          storeId
+        },
+        select: {
+          id: true,
+          nome: true,
+          email: true,
+          role: true,
+          ativo: true
+        }
+      });
+
+      return res.status(201).json(newUser);
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: 'Erro ao criar funcionário' });
+    }
+  }
+
+  async updateUser(req: Request, res: Response) {
+    try {
+      const storeId = req.user?.storeId as string;
+      const id = req.params.id as string;
+      
+      if (!storeId) return res.status(401).json({ error: 'Não autorizado' });
+
+      if (req.user?.role !== 'ADMIN' && req.user?.role !== 'SUPER_ADMIN') {
+        return res.status(403).json({ error: 'Acesso negado' });
+      }
+
+      const { nome, email, senha, role, permiteVendaPrazo, limiteDescontoMaximo, ativo } = req.body;
+
+      // Garantir que o usuário existe e pertence à mesma loja
+      const existingUser = await prisma.user.findFirst({
+        where: { id, storeId }
+      });
+
+      if (!existingUser) {
+        return res.status(404).json({ error: 'Funcionário não encontrado' });
+      }
+
+      // Impede modificar o SUPER_ADMIN
+      if (existingUser.role === 'SUPER_ADMIN' && req.user?.role !== 'SUPER_ADMIN') {
+        return res.status(403).json({ error: 'Você não pode modificar um Super Administrador' });
+      }
+
+      const updateData: any = {};
+      if (nome) updateData.nome = nome;
+      if (email) updateData.email = email;
+      if (role) updateData.role = role;
+      if (permiteVendaPrazo !== undefined) updateData.permiteVendaPrazo = permiteVendaPrazo;
+      if (limiteDescontoMaximo !== undefined) updateData.limiteDescontoMaximo = limiteDescontoMaximo;
+      if (ativo !== undefined) updateData.ativo = ativo;
+
+      if (senha) {
+        updateData.senhaHash = await bcrypt.hash(senha, 10);
+      }
+
+      const updatedUser = await prisma.user.update({
+        where: { id },
+        data: updateData,
+        select: {
+          id: true,
+          nome: true,
+          email: true,
+          role: true,
+          ativo: true,
+          permiteVendaPrazo: true,
+          limiteDescontoMaximo: true
+        }
+      });
+
+      return res.json(updatedUser);
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: 'Erro ao atualizar funcionário' });
+    }
+  }
+
+  async uploadPix(req: Request, res: Response) {
+    try {
+      const storeId = req.user?.storeId as string;
+      if (!storeId) return res.status(403).json({ error: 'Acesso negado' });
+
+      if (!req.file) {
+        return res.status(400).json({ error: 'Nenhuma imagem enviada' });
+      }
+
+      // O caminho salvo será algo como '/uploads/pix-12345.jpg'
+      const fileUrl = `/uploads/${req.file.filename}`;
+
+      await prisma.store.update({
+        where: { id: storeId },
+        data: { pixQrCodeUrl: fileUrl }
+      });
+
+      return res.json({ message: 'QR Code atualizado com sucesso', pixQrCodeUrl: fileUrl });
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: 'Erro ao fazer upload da imagem' });
+    }
+  }
+
+}

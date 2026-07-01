@@ -1,0 +1,153 @@
+import { Request, Response } from "express";
+import { prisma } from "../lib/prisma";
+
+export class SaleController {
+  async list(req: Request, res: Response) {
+    try {
+      const storeId = req.user?.storeId || (req.user as any)?.tenant_id;
+      if (!storeId) {
+        return res.status(401).json({ message: "Tenant ID não encontrado no token" });
+      }
+
+      const sales = await prisma.sale.findMany({
+        where: { storeId },
+        orderBy: { dataVenda: 'desc' },
+        include: {
+          customer: { select: { nomeCompleto: true } },
+          user: { select: { nome: true } },
+          saleItems: true
+        }
+      });
+
+      res.json(sales);
+    } catch (error) {
+      console.error("Erro ao listar vendas:", error);
+      res.status(500).json({ message: "Erro interno do servidor" });
+    }
+  }
+
+  async create(req: Request, res: Response) {
+    try {
+      const storeId = req.user?.storeId || (req.user as any)?.tenant_id;
+      const userId = req.user?.id;
+      if (!storeId || !userId) {
+        return res.status(401).json({ message: "Usuário ou Tenant não identificado" });
+      }
+
+      const { 
+        customerId, 
+        itens, 
+        formaPagamento, 
+        valorDesconto = 0, 
+        valorSinal = 0, 
+        numeroParcelas = 1 
+      } = req.body;
+
+      if (!itens || itens.length === 0) {
+        return res.status(400).json({ message: "A venda deve conter pelo menos um item" });
+      }
+
+      if (formaPagamento === 'CREDIARIO' && !customerId) {
+        return res.status(400).json({ message: "Cliente é obrigatório para vendas no Crediário" });
+      }
+
+      // 1. Transaction Start
+      const result = await prisma.$transaction(async (tx) => {
+        let valorTotalBruto = 0;
+        const saleItemsData: any[] = [];
+
+        // 2. Fetch products and calculate values
+        for (const item of itens) {
+          const product = await tx.product.findFirst({
+            where: { id: item.productId, storeId }
+          });
+
+          if (!product) {
+            throw new Error(`Produto não encontrado: ${item.productId}`);
+          }
+
+          const qte = Number(item.quantidade);
+          const preco = Number(item.precoUnitarioVendido);
+          const subtotal = qte * preco;
+          
+          valorTotalBruto += subtotal;
+
+          saleItemsData.push({
+            productId: product.id,
+            quantidade: qte,
+            precoUnitarioVendido: preco,
+            custoUnitarioHistorico: product.custoFinal || 0,
+            comissaoVendedorValor: 0 // Simplificado para o MVP
+          });
+
+          // 3. Update stock (Permitindo negativar se for o caso)
+          await tx.product.update({
+            where: { id: product.id },
+            data: {
+              qtdEstoqueAtual: {
+                decrement: qte
+              }
+            }
+          });
+        }
+
+        const valorTotalLiquido = valorTotalBruto - Number(valorDesconto);
+
+        // 4. Create Sale
+        const sale = await tx.sale.create({
+          data: {
+            storeId,
+            userId,
+            customerId: customerId || null,
+            valorTotalBruto,
+            valorDesconto: Number(valorDesconto),
+            valorTotalLiquido,
+            formaPagamento,
+            valorSinal: Number(valorSinal),
+            numeroParcelas: Number(numeroParcelas),
+            status: 'FINALIZADA',
+            saleItems: {
+              create: saleItemsData
+            }
+          }
+        });
+
+        // 5. Generate Receivables for Crediario
+        if (formaPagamento === 'CREDIARIO' && customerId) {
+          const valorRestante = valorTotalLiquido - Number(valorSinal);
+          if (valorRestante > 0) {
+            const numParcelas = Number(numeroParcelas) || 1;
+            const valorParcela = valorRestante / numParcelas;
+
+            for (let i = 1; i <= numParcelas; i++) {
+              // Adiciona (i * 30) dias à data atual
+              const dataVencimento = new Date();
+              dataVencimento.setDate(dataVencimento.getDate() + (i * 30));
+
+              await tx.accountReceivable.create({
+                data: {
+                  storeId,
+                  saleId: sale.id,
+                  customerId,
+                  numeroParcela: i,
+                  totalParcelas: numParcelas,
+                  valorParcela,
+                  dataVencimento,
+                  formaPagamentoEsperada: 'PIX', // Padrão
+                  status: 'PENDENTE'
+                }
+              });
+            }
+          }
+        }
+
+        return sale;
+      });
+
+      res.status(201).json(result);
+    } catch (error: any) {
+      console.error("Erro ao criar venda:", error);
+      res.status(400).json({ message: error.message || "Erro ao processar a venda" });
+    }
+  }
+}

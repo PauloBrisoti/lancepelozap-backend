@@ -1,0 +1,141 @@
+import { Request, Response } from 'express';
+import { prisma } from '../lib/prisma';
+import { MercadoPagoConfig, Preference } from 'mercadopago';
+
+export class SubscriptionController {
+  
+  // Listar todas assinaturas (Somente Super ADM)
+  static async listAll(req: Request, res: Response) {
+    try {
+      if (req.user?.role !== 'SUPER_ADMIN') {
+        return res.status(403).json({ message: 'Acesso negado' });
+      }
+
+      const subscriptions = await prisma.subscription.findMany({
+        include: {
+          client: true
+        },
+        orderBy: { dataVencimento: 'desc' }
+      });
+
+      return res.status(200).json(subscriptions);
+    } catch (error) {
+      console.error('Erro ao listar subscriptions:', error);
+      return res.status(500).json({ message: 'Erro interno' });
+    }
+  }
+
+  // Ver assinatura do lojista atual
+  static async getMySubscription(req: Request, res: Response) {
+    try {
+      const clientId = (req.user as any)?.clientId as string;
+
+      if (!clientId) return res.status(401).json({ message: 'Não autorizado' });
+
+      const subscription = await prisma.subscription.findFirst({
+        where: { clientId },
+        orderBy: { dataVencimento: 'desc' }
+      });
+
+      return res.status(200).json(subscription || null);
+    } catch (error) {
+      console.error('Erro ao buscar subscription do tenant:', error);
+      return res.status(500).json({ message: 'Erro interno' });
+    }
+  }
+
+  // Criar / Atualizar plano
+  static async updatePlan(req: Request, res: Response) {
+    try {
+      const clientId = (req.user as any)?.clientId as string;
+
+      const { plano, valorMensalidade } = req.body;
+      
+      if (!clientId) return res.status(401).json({ message: 'Não autorizado' });
+
+      // Create pending subscription
+      const novaAssinatura = await prisma.subscription.create({
+        data: {
+          clientId,
+          planId: plano,
+          valorMensalidade: Number(valorMensalidade),
+          dataVencimento: new Date(), // Vai ser atualizado no webhook
+          statusPagamento: 'PENDENTE'
+        }
+      });
+
+      // Initialize Mercado Pago
+      const client = new MercadoPagoConfig({ accessToken: process.env.MP_ACCESS_TOKEN || 'TEST-000000' });
+      const preference = new Preference(client);
+
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+
+      const result = await preference.create({
+        body: {
+          items: [
+            {
+              id: plano,
+              title: `Plano ${plano} - Lance Pelo Zap`,
+              quantity: 1,
+              unit_price: Number(valorMensalidade),
+              currency_id: 'BRL'
+            }
+          ],
+          external_reference: novaAssinatura.id, // Para o webhook saber qual atualizar
+          back_urls: {
+            success: `${frontendUrl}/app/planos?status=success`,
+            pending: `${frontendUrl}/app/planos?status=pending`,
+            failure: `${frontendUrl}/app/planos?status=failure`
+          },
+          auto_return: 'approved'
+        }
+      });
+
+      // Retornamos o link do checkout para o frontend redirecionar
+      return res.status(201).json({
+        subscription: novaAssinatura,
+        init_point: result.init_point // Link de pagamento do Mercado Pago
+      });
+    } catch (error) {
+      console.error('Erro ao atualizar plano:', error);
+      return res.status(500).json({ message: 'Erro interno' });
+    }
+  }
+
+  // Bloquear ou desbloquear tenant (Super ADM)
+  static async toggleBlock(req: Request, res: Response) {
+    try {
+      if (req.user?.role !== 'SUPER_ADMIN') {
+        return res.status(403).json({ message: 'Acesso negado' });
+      }
+
+      const id = req.params.id as string; // ID do tenant
+      const { block } = req.body; // boolean
+
+      // Aqui poderíamos ter um campo 'ativo' ou 'bloqueado' no Tenant. 
+      // Por enquanto vamos atualizar o tenant nome ou adicionar lógica se tivéssemos o campo.
+      // Vamos assumir que a model Tenant tem um campo ativo. Mas olhando o schema, ela só tem: id, razaoSocial, cnpj, etc.
+      // O bloqueio é simulado ou podemos usar a Subscription para status.
+      // Vamos alterar a Subscription mais recente para VENCIDO caso block seja true.
+      
+      const lastSub = await prisma.subscription.findFirst({
+        where: { clientId: id },
+        orderBy: { dataVencimento: 'desc' }
+      });
+
+      if (lastSub) {
+        await prisma.subscription.update({
+          where: { id: lastSub.id },
+          data: {
+            statusPagamento: block ? 'VENCIDO' : 'PAGO'
+          }
+        });
+      }
+
+      return res.status(200).json({ message: `Tenant ${block ? 'bloqueado' : 'desbloqueado'}` });
+    } catch (error) {
+      console.error('Erro ao bloquear tenant:', error);
+      return res.status(500).json({ message: 'Erro interno' });
+    }
+  }
+}
