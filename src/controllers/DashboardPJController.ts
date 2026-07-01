@@ -299,6 +299,7 @@ export class DashboardPJController {
         const prevDescontos = Number(prevSalesAgg._sum.valorDesconto || 0);
         const prevTaxas = Number(prevSalesAgg._sum.valorTaxasGateway || 0);
         const prevFatLiquido = prevFatBruto - prevDescontos - prevTaxas;
+        const prevCmv = Number(prevSalesAgg._sum.cmvTotal || 0);
         const prevReceita = Number(prevReceitasAgg._sum.valor || 0);
         const prevDespesa = Number(prevDespesasAgg._sum.valor || 0);
         const aliquota = aliquotaMap.get(sid) || 0;
@@ -373,6 +374,7 @@ export class DashboardPJController {
           aReceberFiado: aReceber,
           paymentMethodsBreakdown: storePaymentBreakdown,
           prevVolume,
+          prevCmv,
           prevFatLiquido,
           prevReceita,
           prevDespesa,
@@ -402,7 +404,7 @@ export class DashboardPJController {
         prevVolume: 0, prevFatLiquido: 0, prevReceita: 0, prevDespesa: 0,
       });
 
-      const prevTotalLucroLiquido = storeMetrics.reduce((acc, s) => acc + (s.prevFatLiquido - s.cmv - s.prevDespesa), 0);
+      const prevTotalLucroLiquido = storeMetrics.reduce((acc, s) => acc + (s.prevFatLiquido - (s.prevCmv || 0) - s.prevDespesa), 0);
       const faturamentoCrescimento = total.prevFatLiquido === 0 ? 100 : ((total.faturamentoLiquido - total.prevFatLiquido) / total.prevFatLiquido) * 100;
       const lucroCrescimento = prevTotalLucroLiquido === 0 ? 100 : ((total.lucroLiquido - prevTotalLucroLiquido) / Math.abs(prevTotalLucroLiquido)) * 100;
 
