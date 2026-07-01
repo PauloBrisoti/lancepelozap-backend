@@ -62,9 +62,9 @@ router.get('/dashboard', FinanceController.getDashboard);
 router.get('/transactions', FinanceController.getTransactions);
 router.post('/transactions', requirePlanFeature('financeiro'), upload.single('comprovante'), FinanceController.addTransaction);
 router.put('/transactions/:id', requirePlanFeature('financeiro'), FinanceController.updateTransaction);
-router.get('/receivables', requirePlanFeature('financeiro'), FinanceController.getReceivables);
-router.post('/receivables/:id/pay', requirePlanFeature('financeiro'), FinanceController.payReceivable);
-router.post('/receivables/:id/renegotiate', requirePlanFeature('financeiro'), FinanceController.renegotiateReceivable);
+router.get('/receivables', requirePlanFeature('crediario'), FinanceController.getReceivables);
+router.post('/receivables/:id/pay', requirePlanFeature('crediario'), FinanceController.payReceivable);
+router.post('/receivables/:id/renegotiate', requirePlanFeature('crediario'), FinanceController.renegotiateReceivable);
 
 router.get('/payables', requirePlanFeature('financeiro'), FinanceController.getPayables);
 router.post('/payables', requirePlanFeature('financeiro'), FinanceController.createPayable);
