@@ -131,9 +131,9 @@ export class DashboardController {
         select: { id: true, nome: true, qtdEstoqueAtual: true }
       });
 
-      // 5. Últimas 5 vendas
+      // 5. Últimas 5 vendas (dentro do período selecionado)
       const ultimasVendas = await prisma.sale.findMany({
-        where: { storeId, status: { not: 'CANCELADA' } },
+        where: { storeId, status: { not: 'CANCELADA' }, dataVenda: { gte: startDate, lte: endDate } },
         orderBy: { dataVenda: 'desc' },
         take: 5,
         include: { customer: true }
