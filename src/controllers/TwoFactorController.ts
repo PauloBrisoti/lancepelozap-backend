@@ -3,8 +3,7 @@ import speakeasy from "speakeasy";
 import QRCode from "qrcode";
 import { prisma } from "../lib/prisma";
 import jwt from "jsonwebtoken";
-
-const JWT_SECRET = process.env.JWT_SECRET || "fallback_secret";
+import { JWT_SECRET } from "../lib/jwt";
 
 export class TwoFactorController {
   // Gera o segredo e o QRCode para o usuário logado
@@ -129,12 +128,16 @@ export class TwoFactorController {
           storeAccess: { include: { store: { include: { control: true } } } }
         }
       });
+      const clientAccess = userWithRelations?.clientAccess?.[0];
+      const client = clientAccess ? await prisma.client.findUnique({ where: { id: clientAccess.clientId }, select: { dadosCompletos: true } }) : null;
       const publicData = {
          id: user.id,
          nome: user.nome,
          email: user.email,
          role: user.role,
          ativo: user.ativo,
+         clientId: clientAccess?.clientId || null,
+         dadosCompletos: client?.dadosCompletos ?? false,
          storeAccess: userWithRelations?.storeAccess,
          availableStores: userWithRelations?.storeAccess.map(a => a.store)
       };

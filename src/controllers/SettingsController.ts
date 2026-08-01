@@ -29,9 +29,14 @@ export class SettingsController {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ error: 'Não autorizado' });
       
-      // Apenas ADMIN ou SUPER_ADMIN podem editar a loja
-      if (req.user?.role !== 'ADMIN' && req.user?.role !== 'SUPER_ADMIN') {
-        return res.status(403).json({ error: 'Acesso negado' });
+      // Apenas ADMIN_LOJA, GERENTE ou SUPER_ADMIN podem editar a loja
+      if (req.user?.role !== 'SUPER_ADMIN') {
+        const access = await prisma.storeUserAccess.findUnique({
+          where: { storeId_userId: { storeId, userId: req.user!.id } }
+        });
+        if (!access || (access.role !== 'ADMIN_LOJA' && access.role !== 'GERENTE')) {
+          return res.status(403).json({ error: 'Acesso negado' });
+        }
       }
 
       const { nomeFantasia, nichoPrincipal, telefoneWhatsapp, emailContato, chavePix, aliquotaImposto } = req.body;
@@ -70,8 +75,14 @@ export class SettingsController {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ error: 'Não autorizado' });
       
-      if (req.user?.role !== 'ADMIN' && req.user?.role !== 'SUPER_ADMIN') {
-        return res.status(403).json({ error: 'Acesso negado. Apenas o administrador da loja pode zerar o faturamento.' });
+      const userId = req.user!.id as string;
+      if (req.user?.role !== 'SUPER_ADMIN') {
+        const access = await prisma.storeUserAccess.findUnique({
+          where: { storeId_userId: { storeId, userId } }
+        });
+        if (!access || (access.role !== 'ADMIN_LOJA' && access.role !== 'GERENTE')) {
+          return res.status(403).json({ error: 'Acesso negado. Apenas o administrador da loja pode zerar o faturamento.' });
+        }
       }
 
       await prisma.$transaction([

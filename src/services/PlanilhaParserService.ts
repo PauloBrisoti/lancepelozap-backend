@@ -793,6 +793,7 @@ export class PlanilhaParserService {
             valorSinal: v.sinal,
             numeroParcelas: v.parcelas,
             status: v.formaPagamento === 'CREDIARIO' ? 'PENDENTE' : 'FINALIZADA',
+            finalizedAt: v.formaPagamento === 'CREDIARIO' ? null : new Date(),
             observacoes: v.observacao || 'Importado via planilha',
             saleItems: { create: saleItemsData },
           }

@@ -108,14 +108,16 @@ export async function sendPendingApproval(email: string, nome: string): Promise<
   );
 }
 
-export async function sendAccountApproved(email: string, nome: string): Promise<boolean> {
+export async function sendAccountApproved(para: string, nome: string, emailUsuario?: string): Promise<boolean> {
   const nomeSeguro = escapeHtml(nome);
+  const emailExibido = emailUsuario ? escapeHtml(emailUsuario) : escapeHtml(para);
   return sendEmail(
-    email,
-    'Conta aprovada - Controle de Vendas e Finanças',
+    para,
+    'Conta aprovada — Controle de Vendas e Finanças',
     `<div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px">
       <h2 style="color:#059669">Bem-vindo, ${nomeSeguro}!</h2>
-      <p>Sua conta foi <strong>aprovada</strong>! 🎉</p>
+      <p>Sua conta foi <strong>aprovada</strong>!</p>
+      <p><strong>E-mail de acesso:</strong> ${emailExibido}</p>
       <p>Você já pode acessar o sistema e começar a usar todos os recursos.</p>
       <a href="https://app.lancepelozap.com.br/login" style="display:inline-block;background:#059669;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;margin:16px 0">
         Acessar Sistema

@@ -1,5 +1,7 @@
 import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
+import { toZonedTime } from 'date-fns-tz';
+import { getTimezone } from '../lib/dateUtils';
 
 export class CustomerPortalController {
   async getProfile(req: Request, res: Response) {
@@ -66,7 +68,7 @@ export class CustomerPortalController {
       const customer = await prisma.customer.findUnique({ where: { portalToken: token } });
       if (!customer) return res.status(404).json({ message: 'Link inválido' });
 
-      const hoje = new Date();
+      const hoje = toZonedTime(new Date(), getTimezone());
       hoje.setHours(0, 0, 0, 0);
 
       const receivables = await prisma.accountReceivable.findMany({

@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import PDFDocument from 'pdfkit';
 import { format } from 'date-fns';
+import { buildDateRange } from '../lib/dateUtils';
 
 export class DreController {
   static async getDre(req: Request, res: Response) {
@@ -11,30 +12,21 @@ export class DreController {
 
       const queryStart = req.query.startDate as string;
       const queryEnd = req.query.endDate as string;
-      const hoje = new Date();
       
-      let startDate: Date;
-      let endDate: Date;
-
-      if (queryStart && queryEnd) {
-        startDate = new Date(`${queryStart}T00:00:00.000Z`);
-        const d = new Date(String(queryEnd));
-        d.setDate(d.getDate() + 1);
-        endDate = new Date(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}T23:59:59.999Z`);
-      } else {
-        startDate = new Date(Date.UTC(hoje.getUTCFullYear(), hoje.getUTCMonth(), 1, 0, 0, 0, 0));
-        const d = new Date(hoje);
-        d.setDate(d.getDate() + 1);
-        endDate = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 23, 59, 59, 999));
-      }
+      const { firstDay: startDate, lastDay: endDate } = buildDateRange(queryStart, queryEnd);
 
       // 1. Receita Operacional Bruta
       const salesAggregate = await prisma.sale.aggregate({
         where: { storeId, status: { not: 'CANCELADA' }, dataVenda: { gte: startDate, lte: endDate } },
         _sum: { valorTotalBruto: true, valorDesconto: true, valorTaxasGateway: true, cmvTotal: true }
       });
+      const petOrdersAgg = await prisma.petServiceOrder.aggregate({
+        where: { storeId, status: 'CONCLUIDO', dataConclusao: { gte: startDate, lte: endDate } },
+        _sum: { valorFinal: true }
+      });
+      const petRevenue = Number(petOrdersAgg._sum.valorFinal || 0);
       
-      const receitaBruta = Number(salesAggregate._sum.valorTotalBruto || 0);
+      const receitaBruta = Number(salesAggregate._sum.valorTotalBruto || 0) + petRevenue;
 
       // 2. Deduções (Descontos + Taxas)
       const descontos = Number(salesAggregate._sum.valorDesconto || 0);
@@ -95,7 +87,7 @@ export class DreController {
           tipo: 'SAIDA',
           status: 'ATIVA',
           dataTransacao: { gte: startDate, lte: endDate },
-          categoria: { notIn: ['DEVOLUCAO', 'PRO_LABORE', 'RETIRADA_LUCRO'] } // Devoluções e lucros não são despesas operacionais da DRE
+          categoria: { notIn: ['DEVOLUCAO', 'PRO_LABORE', 'RETIRADA_LUCRO', 'CANCELAMENTO'] } // Devoluções, lucros e cancelamentos não são despesas operacionais da DRE
         },
         _sum: { valor: true }
       });
@@ -152,22 +144,8 @@ export class DreController {
 
       const queryStart = req.query.startDate as string;
       const queryEnd = req.query.endDate as string;
-      const hoje = new Date();
       
-      let startDate: Date;
-      let endDate: Date;
-
-      if (queryStart && queryEnd) {
-        startDate = new Date(`${queryStart}T00:00:00.000Z`);
-        const d = new Date(String(queryEnd));
-        d.setDate(d.getDate() + 1);
-        endDate = new Date(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}T23:59:59.999Z`);
-      } else {
-        startDate = new Date(Date.UTC(hoje.getUTCFullYear(), hoje.getUTCMonth(), 1, 0, 0, 0, 0));
-        const d = new Date(hoje);
-        d.setDate(d.getDate() + 1);
-        endDate = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 23, 59, 59, 999));
-      }
+      const { firstDay: startDate, lastDay: endDate } = buildDateRange(queryStart, queryEnd);
 
       const periodoLabel = `${startDate.toLocaleDateString('pt-BR')} a ${endDate.toLocaleDateString('pt-BR')}`;
 
@@ -224,7 +202,7 @@ export class DreController {
         where: {
           storeId, tipo: 'SAIDA', status: 'ATIVA',
           dataTransacao: { gte: startDate, lte: endDate },
-          categoria: { notIn: ['DEVOLUCAO', 'PRO_LABORE', 'RETIRADA_LUCRO'] }
+          categoria: { notIn: ['DEVOLUCAO', 'PRO_LABORE', 'RETIRADA_LUCRO', 'CANCELAMENTO'] }
         },
         _sum: { valor: true }
       });
@@ -244,7 +222,7 @@ export class DreController {
       if (formato === 'pdf') {
         const doc = new PDFDocument({ margin: 40, size: 'A4' });
         res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Disposition', `attachment; filename="dre_${format(hoje, 'yyyy-MM-dd')}.pdf"`);
+        res.setHeader('Content-Disposition', `attachment; filename="dre_${format(new Date(), 'yyyy-MM-dd')}.pdf"`);
         doc.pipe(res);
 
         const pageWidth = doc.page.width - 80;
@@ -324,7 +302,7 @@ export class DreController {
 
         const csv = csvLines.join('\r\n');
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-        res.setHeader('Content-Disposition', `attachment; filename="dre_${format(hoje, 'yyyy-MM-dd')}.csv"`);
+        res.setHeader('Content-Disposition', `attachment; filename="dre_${format(new Date(), 'yyyy-MM-dd')}.csv"`);
         res.send('\uFEFF' + csv);
       }
     } catch (error) {

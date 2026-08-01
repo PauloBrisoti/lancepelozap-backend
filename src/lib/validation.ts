@@ -2,6 +2,41 @@ import { z } from 'zod';
 import { Request, Response, NextFunction } from 'express';
 import { fail } from './response';
 
+export const EMAIL_REGEX = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$/;
+
+export const DISPOSABLE_DOMAINS = new Set([
+  'mailinator.com', 'guerrillamail.com', '10minutemail.com', 'temp-mail.org',
+  'throwaway.email', 'yopmail.com', 'mailnator.com', 'trashmail.com',
+  'temporarymail.com', 'fakemail.com', 'emailfake.com', 'tempmail.net',
+  'mailcatch.com', 'mytemp.email', 'spam4.me', 'dispostable.com',
+  'getnada.com', 'maildrop.cc', 'inboxbear.com', 'tempr.email',
+  'sharklasers.com', 'grr.la', ' Guerrillamail.info',
+]);
+
+const GENERIC_DOMAINS = new Set([
+  'test.com', 'example.com', 'domain.com', 'company.com', 'email.com',
+  'mail.com', 'website.com', 'yourdomain.com', 'yourcompany.com',
+  'mycompany.com', 'mydomain.com', 'localhost.com', 'teste.com',
+  'teste123.com', 'email.com.br', 'provedor.com', 'meuemail.com',
+  'nomail.com', 'nowhere.com',
+]);
+
+export function emailValido(msg?: string) {
+  return z.string()
+    .regex(EMAIL_REGEX, msg || 'E-mail inválido')
+    .refine(val => {
+      const domain = val.split('@')[1]?.toLowerCase();
+      return domain ? !DISPOSABLE_DOMAINS.has(domain) : true;
+    }, 'E-mail descartável não é permitido')
+    .refine(val => {
+      const domain = val.split('@')[1]?.toLowerCase();
+      return domain ? !GENERIC_DOMAINS.has(domain) : true;
+    }, 'E-mail genérico não é permitido');
+}
+
+export const TELEFONE_REGEX = /^\(\d{2}\)\s9\d{4}-\d{4}$/;
+export const telefoneValido = (msg?: string) => z.string().regex(TELEFONE_REGEX, msg || 'Telefone deve estar no formato (XX) 9XXXX-XXXX');
+
 export function validate(schema: z.ZodSchema) {
   return (req: Request, res: Response, next: NextFunction) => {
     const result = schema.safeParse(req.body);
@@ -27,8 +62,11 @@ export const saleSchema = z.object({
   })).min(1, 'Mínimo de 1 item'),
   formaPagamento: z.enum(['PIX', 'CARTAO_CREDITO', 'CARTAO_DEBITO', 'DINHEIRO', 'CREDIARIO']),
   valorDesconto: z.number().min(0).optional().default(0),
+  valorAcrescimo: z.number().min(0).optional().default(0),
   valorSinal: z.number().min(0).optional().default(0),
   numeroParcelas: z.number().int().positive().optional().default(1),
+  dataVenda: z.string().optional(),
+  formaPagamentoEntrada: z.string().optional(),
 });
 
 export const productSchema = z.object({
@@ -57,7 +95,7 @@ export const customerSchema = z.object({
   nomeCompleto: z.string().min(1, 'Nome é obrigatório'),
   cpf: z.string().optional(),
   telefoneWhatsapp: z.string().optional(),
-  email: z.string().email().optional().or(z.literal('')),
+  email: emailValido().optional().or(z.literal('')),
   cep: z.string().optional(),
   enderecoCompleto: z.string().optional(),
 });
@@ -66,6 +104,7 @@ export const categorySchema = z.object({
   nome: z.string().min(1, 'Nome é obrigatório'),
   corHexadecimal: z.string().optional(),
   margemLucroPadrao: z.number().optional(),
+  aliquotaImposto: z.union([z.string(), z.number()]).optional(),
 });
 
 export const transactionSchema = z.object({
@@ -80,7 +119,7 @@ export const transactionSchema = z.object({
 });
 
 export const loginSchema = z.object({
-  email: z.string().email('E-mail inválido'),
+  email: emailValido('E-mail inválido'),
   password: z.string().min(1, 'Senha é obrigatória'),
 });
 
@@ -94,7 +133,7 @@ export const passwordSchema = z
 
 export const createUserSchema = z.object({
   nome: z.string().min(1, 'Nome é obrigatório'),
-  email: z.string().email('E-mail inválido'),
+  email: emailValido('E-mail inválido'),
   password: passwordSchema,
   role: z.enum(['VENDEDOR', 'CAIXA', 'GERENTE']).optional().default('VENDEDOR'),
 });
@@ -102,7 +141,7 @@ export const createUserSchema = z.object({
 export const registerSchema = z.object({
   nomeFantasia: z.string().min(2, 'Nome da loja é obrigatório'),
   nomeResponsavel: z.string().min(2, 'Nome do responsável é obrigatório'),
-  email: z.string().email('E-mail inválido'),
+  email: emailValido('E-mail inválido'),
   senha: z
     .string()
     .min(8, 'Senha deve ter no mínimo 8 caracteres')
@@ -110,7 +149,7 @@ export const registerSchema = z.object({
     .regex(/[A-Z]/, 'Senha deve conter pelo menos uma letra maiúscula')
     .regex(/[a-z]/, 'Senha deve conter pelo menos uma letra minúscula')
     .regex(/[0-9]/, 'Senha deve conter pelo menos um número'),
-  telefoneWhatsapp: z.string().optional(),
+  telefoneWhatsapp: telefoneValido('Telefone WhatsApp é obrigatório e deve estar no formato (XX) 9XXXX-XXXX'),
   cnpjCpf: z.string().optional(),
 });
 
@@ -129,13 +168,24 @@ export const tenantSettingsSchema = z.object({
   nomeFantasia: z.string().optional(),
   nichoPrincipal: z.string().optional(),
   telefoneWhatsapp: z.string().optional(),
-  emailContato: z.string().email().optional().or(z.literal('')),
+  emailContato: emailValido().optional().or(z.literal('')),
   chavePix: z.string().optional(),
+});
+
+export const completeProfileSchema = z.object({
+  telefoneWhatsapp: telefoneValido('WhatsApp deve estar no formato (XX) 9XXXX-XXXX'),
+  cep: z.string().optional(),
+  logradouro: z.string().optional(),
+  numero: z.string().optional(),
+  complemento: z.string().optional(),
+  bairro: z.string().optional(),
+  cidade: z.string().optional(),
+  uf: z.string().optional(),
 });
 
 export const createUserSchemaOld = z.object({
   nome: z.string().min(1),
-  email: z.string().email(),
+  email: emailValido(),
   password: z.string().min(6, 'Senha deve ter no mínimo 6 caracteres'),
   role: z.enum(['VENDEDOR', 'CAIXA', 'GERENTE']).optional().default('VENDEDOR'),
 });

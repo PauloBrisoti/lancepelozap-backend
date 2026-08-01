@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { QuoteController } from "../controllers/QuoteController";
 import { requireAuth } from "../middleware/auth";
+import { requireWorkspaceType } from '../middleware/requireWorkspaceType';
 import { requireStorePermission } from "../middleware/requireStorePermission";
 import { autoAudit } from "../middleware/autoAudit";
 
@@ -8,6 +9,7 @@ const quoteRouter = Router();
 const quoteController = new QuoteController();
 
 quoteRouter.use(requireAuth);
+quoteRouter.use(requireWorkspaceType('PJ'));
 quoteRouter.use(autoAudit());
 
 quoteRouter.get("/", quoteController.list);

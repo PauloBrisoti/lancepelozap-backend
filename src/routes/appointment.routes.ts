@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth';
+import { requireWorkspaceType } from '../middleware/requireWorkspaceType';
 import { AppointmentController } from '../controllers/AppointmentController';
 
 const router = Router();
 const ctrl = new AppointmentController();
 
 router.use(requireAuth);
+router.use(requireWorkspaceType('PJ'));
 
 // Professionals
 router.get('/professionals', ctrl.listProfessionals.bind(ctrl));

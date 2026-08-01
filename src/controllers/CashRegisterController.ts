@@ -48,17 +48,23 @@ export class CashRegisterController {
       });
       if (!cashRegister) return res.status(404).json({ message: 'Nenhum caixa aberto encontrado' });
 
-      // Calculate expected balance
-      const salesTotal = await prisma.sale.aggregate({
+      // Em CREDIARIO só o sinal entra de fato no caixa; o restante vai para AccountReceivable.
+      const salesForBalance = await prisma.sale.findMany({
         where: { cashRegisterId: cashRegister.id, status: 'FINALIZADA' },
-        _sum: { valorTotalLiquido: true },
+        select: { formaPagamento: true, valorTotalLiquido: true, valorSinal: true },
       });
+      const totalRecebidoEmCaixa = salesForBalance.reduce((acc, s) => {
+        const valorRecebido = s.formaPagamento === 'CREDIARIO'
+          ? Number(s.valorSinal)
+          : Number(s.valorTotalLiquido);
+        return acc + valorRecebido;
+      }, 0);
 
       const transactions = await prisma.cashTransaction.findMany({
         where: { cashRegisterId: cashRegister.id },
       });
 
-      let saldoEsperado = Number(cashRegister.valorTrocoInicial) + Number(salesTotal._sum.valorTotalLiquido || 0);
+      let saldoEsperado = Number(cashRegister.valorTrocoInicial) + totalRecebidoEmCaixa;
       for (const t of transactions) {
         if (t.tipo === 'SUPRIMENTO') saldoEsperado += Number(t.valor);
         else if (t.tipo === 'SANGRIA') saldoEsperado -= Number(t.valor);
@@ -106,15 +112,21 @@ export class CashRegisterController {
 
       if (!cashRegister) return res.json({ data: null });
 
-      const salesTotal = await prisma.sale.aggregate({
+      const salesForTotal = await prisma.sale.findMany({
         where: { cashRegisterId: cashRegister.id, status: 'FINALIZADA' },
-        _sum: { valorTotalLiquido: true },
+        select: { formaPagamento: true, valorTotalLiquido: true, valorSinal: true },
       });
+      const totalRecebidoEmCaixa = salesForTotal.reduce((acc, s) => {
+        const valorRecebido = s.formaPagamento === 'CREDIARIO'
+          ? Number(s.valorSinal)
+          : Number(s.valorTotalLiquido);
+        return acc + valorRecebido;
+      }, 0);
 
       res.json({
         data: {
           ...cashRegister,
-          totalVendas: Number(salesTotal._sum.valorTotalLiquido || 0),
+          totalVendas: totalRecebidoEmCaixa,
         }
       });
     } catch (error: any) {
@@ -143,19 +155,22 @@ export class CashRegisterController {
       // Sales by payment method
       const sales = await prisma.sale.findMany({
         where: { cashRegisterId: id, status: 'FINALIZADA' },
-        select: { formaPagamento: true, valorTotalLiquido: true },
+        select: { formaPagamento: true, valorTotalLiquido: true, valorSinal: true },
       });
 
       const byPaymentMethod: Record<string, number> = {};
       let totalVendas = 0;
+      let totalRecebidoEmCaixa = 0;
       for (const s of sales) {
         const method = s.formaPagamento || 'OUTROS';
+        const valorRecebido = s.formaPagamento === 'CREDIARIO' ? Number(s.valorSinal) : Number(s.valorTotalLiquido);
         byPaymentMethod[method] = (byPaymentMethod[method] || 0) + Number(s.valorTotalLiquido);
         totalVendas += Number(s.valorTotalLiquido);
+        totalRecebidoEmCaixa += valorRecebido;
       }
 
       // Calculate expected balance
-      let saldoEsperado = Number(cashRegister.valorTrocoInicial) + totalVendas;
+      let saldoEsperado = Number(cashRegister.valorTrocoInicial) + totalRecebidoEmCaixa;
       for (const t of cashRegister.cashTransactions) {
         if (t.tipo === 'SUPRIMENTO') saldoEsperado += Number(t.valor);
         else if (t.tipo === 'SANGRIA') saldoEsperado -= Number(t.valor);

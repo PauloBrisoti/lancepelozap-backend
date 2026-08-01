@@ -22,9 +22,23 @@ export const registerTenant = async (req: Request, res: Response): Promise<void>
     // Hash da senha
     const hashedPassword = await bcrypt.hash(senha, 10);
 
-    // 2. Criar Client -> Control -> Store -> Users -> Subscription
+    // 2. Resolver plano e workspaceType antes da transação
+    let selectedPlan = planId
+      ? await prisma.plan.findUnique({ where: { id: planId } })
+      : null;
+    if (!selectedPlan) {
+      selectedPlan = await prisma.plan.findFirst({ orderBy: { precoMensal: 'asc' } });
+    }
+    if (!selectedPlan) {
+      selectedPlan = await prisma.plan.create({
+        data: { nome: 'Plano Pro (Trial)', precoMensal: 0, maxControls: 1, maxStores: 1 }
+      });
+    }
+
+    const workspaceType = req.body.workspaceType || (selectedPlan.nome.includes("PF") ? "PF" : "PJ");
+
+    // 3. Criar Client -> Control -> Store -> Users -> Subscription
     const transactionResult = await prisma.$transaction(async (tx) => {
-      // 2.1 Criar Client (status PENDENTE = aguardando aprovação)
       const newClient = await tx.client.create({
         data: {
           nomeCompleto: nomeFantasia,
@@ -34,27 +48,25 @@ export const registerTenant = async (req: Request, res: Response): Promise<void>
         },
       });
 
-      // 2.2 Criar Control
       const newControl = await tx.control.create({
         data: {
           clientId: newClient.id,
-          nome: 'Varejo',
-          tipo: 'PJ'
+          nome: workspaceType === 'PF' ? 'Finanças Pessoais' : 'Varejo',
+          tipo: workspaceType
         }
       });
 
-      // 2.3 Criar Store
       const newStore = await tx.store.create({
         data: {
           controlId: newControl.id,
           nomeFantasia,
           telefoneWhatsapp: telefoneWhatsapp || null,
           emailContato: email,
-          status: 'ATIVO'
+          status: 'ATIVO',
+          tipoWorkspace: workspaceType
         },
       });
 
-      // 2.4 Criar User Global
       const newUser = await tx.user.create({
         data: {
           email,
@@ -64,7 +76,6 @@ export const registerTenant = async (req: Request, res: Response): Promise<void>
         },
       });
 
-      // 2.5 Criar acessos
       await tx.clientUser.create({
         data: {
           clientId: newClient.id,
@@ -81,32 +92,13 @@ export const registerTenant = async (req: Request, res: Response): Promise<void>
         }
       });
 
-      // 2.5b Criar carteira padrão
       await tx.wallet.create({
-        data: { storeId: newStore.id, nome: 'Caixa Interno', tipo: 'EMPRESA', saldoAtual: 0 }
+        data: { storeId: newStore.id, nome: 'Caixa Interno', tipo: workspaceType === 'PF' ? 'PESSOAL' : 'EMPRESA', saldoAtual: 0 }
       });
-
-      // 2.6 Usar o plano escolhido (ou o primeiro como fallback)
-      let selectedPlan = planId
-        ? await tx.plan.findUnique({ where: { id: planId } })
-        : null;
-      if (!selectedPlan) {
-        selectedPlan = await tx.plan.findFirst({ orderBy: { precoMensal: 'asc' } });
-      }
-      if (!selectedPlan) {
-        selectedPlan = await tx.plan.create({
-          data: {
-            nome: 'Plano Pro (Trial)',
-            precoMensal: 0,
-            maxControls: 1,
-            maxStores: 1,
-          }
-        });
-      }
 
       const validade = new Date();
       validade.setDate(validade.getDate() + 7);
-      
+
       const newSubscription = await tx.subscription.create({
         data: {
           clientId: newClient.id,
@@ -120,15 +112,7 @@ export const registerTenant = async (req: Request, res: Response): Promise<void>
       return { newClient, newStore, newUser, newSubscription };
     });
 
-    // 3. Enviar email de confirmação
-    try {
-      const { sendPendingApproval } = await import('../services/email.service');
-      await sendPendingApproval(email, nomeResponsavel || nomeFantasia);
-    } catch (err) {
-      console.error('Erro ao enviar email de confirmação:', err);
-    }
-
-    // 4. Notificar admin sobre novo cadastro
+    // 3. Notificar admin sobre novo cadastro (interno, não envia e-mail ao cliente)
     try {
       const { sendNewTicketNotification } = await import('../services/email.service');
       await sendNewTicketNotification(nomeFantasia, 'Novo cadastro aguardando aprovação', '');
@@ -136,7 +120,9 @@ export const registerTenant = async (req: Request, res: Response): Promise<void>
       console.error('Erro ao notificar admin:', err);
     }
 
-    // 5. Retornar sucesso (sem auto-login — aguarda aprovação do admin)
+    // 4. Retornar sucesso (sem auto-login — aguarda aprovação do admin)
+    // ⚠️ NENHUM e-mail é enviado ao cliente aqui. O e-mail de boas-vindas
+    //    com link de acesso é disparado APENAS na aprovação pelo Super Admin.
     res.status(201).json({
       message: 'Cadastro realizado com sucesso! Sua solicitação será analisada pelo administrador.',
       pending: true

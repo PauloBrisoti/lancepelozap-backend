@@ -1,9 +1,99 @@
 import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { auditLog } from '../lib/audit';
+import { buildDateRange, getTimezone } from '../lib/dateUtils';
+import { toZonedTime } from 'date-fns-tz';
+
+async function deleteSaleTree(tx: any, sale: { id: string; saleItems: { id: string; productId: string; quantidade: any }[] }, storeId: string, userId: string) {
+  for (const item of sale.saleItems) {
+    await tx.product.update({
+      where: { id: item.productId },
+      data: { qtdEstoqueAtual: { increment: Number(item.quantidade) } },
+    });
+    await tx.stockMovement.create({
+      data: {
+        storeId, productId: item.productId, userId,
+        tipo: 'ENTRADA',
+        quantidade: Number(item.quantidade),
+        saldoAnterior: 0, saldoPosterior: 0,
+        referenciaId: sale.id,
+        observacao: `Estorno por exclusão de venda #${sale.id}`,
+      },
+    });
+  }
+
+  const returns = await tx.productReturn.findMany({ where: { saleId: sale.id }, select: { id: true } });
+  if (returns.length > 0) {
+    await tx.productReturn.deleteMany({ where: { id: { in: returns.map((r: any) => r.id) } } });
+  }
+
+  // Delete all receivables of this sale + their payments, with wallet estorno
+  const recs = await tx.accountReceivable.findMany({
+    where: { saleId: sale.id },
+    include: { payments: { select: { id: true, walletId: true, tipo: true, valor: true } } },
+  });
+  for (const rec of recs) {
+    for (const payment of rec.payments) {
+      if (payment.tipo === 'ENTRADA') {
+        await tx.wallet.update({ where: { id: payment.walletId }, data: { saldoAtual: { decrement: Number(payment.valor) } } });
+      } else if (payment.tipo === 'SAIDA') {
+        await tx.wallet.update({ where: { id: payment.walletId }, data: { saldoAtual: { increment: Number(payment.valor) } } });
+      }
+      await tx.financialTransaction.delete({ where: { id: payment.id } });
+    }
+    await tx.accountReceivable.delete({ where: { id: rec.id } });
+  }
+
+  await tx.saleItem.deleteMany({ where: { saleId: sale.id } });
+  await tx.sale.delete({ where: { id: sale.id } });
+}
 
 export class FinanceController {
   
+  // 0. CATEGORIAS FINANCEIRAS
+  static async listCategories(req: Request, res: Response) {
+    try {
+      const storeId = req.user?.storeId as string;
+      const store = await prisma.store.findUnique({
+        where: { id: storeId },
+        select: { features: true }
+      });
+      const storeFeatures: Record<string, boolean> = store?.features ? JSON.parse(store.features) : {};
+      const activeModulos = Object.entries(storeFeatures).filter(([, v]) => v).map(([k]) => k);
+      const categories = await prisma.financialCategory.findMany({
+        where: {
+          OR: [
+            { storeId },
+            { isDefault: true, modulo: null },
+            { isDefault: true, modulo: { in: activeModulos, not: null } }
+          ]
+        },
+        orderBy: { nome: 'asc' }
+      });
+      return res.json(categories);
+    } catch (error) {
+      console.error('Erro ao listar categorias financeiras:', error);
+      return res.status(500).json({ message: 'Erro interno do servidor' });
+    }
+  }
+
+  static async createCategory(req: Request, res: Response) {
+    try {
+      const storeId = req.user?.storeId as string;
+      const { nome, tipo } = req.body;
+      if (!nome || !tipo) {
+        return res.status(400).json({ message: 'Nome e tipo são obrigatórios' });
+      }
+      const category = await prisma.financialCategory.create({
+        data: { nome, tipo, storeId }
+      });
+      return res.status(201).json(category);
+    } catch (error) {
+      console.error('Erro ao criar categoria financeira:', error);
+      return res.status(500).json({ message: 'Erro interno do servidor' });
+    }
+  }
+
   // 1. DASHBOARD E SALDOS
   static async getDashboard(req: Request, res: Response) {
     try {
@@ -30,24 +120,12 @@ export class FinanceController {
       
       const saldoTotal = wallets.reduce((acc, w) => acc + Number(w.saldoAtual), 0);
 
-      const hoje = new Date();
-      hoje.setHours(0, 0, 0, 0);
-
       const queryStart = req.query.startDate as string;
       const queryEnd = req.query.endDate as string;
       
-      let startOfPeriod: Date;
-      let endOfPeriod: Date;
-      
-      if (queryStart && queryEnd) {
-        startOfPeriod = new Date(`${queryStart}T00:00:00.000Z`);
-        const d = new Date(String(queryEnd));
-        d.setDate(d.getDate() + 1);
-        endOfPeriod = new Date(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}T23:59:59.999Z`);
-      } else {
-        startOfPeriod = new Date(Date.UTC(hoje.getUTCFullYear(), hoje.getUTCMonth(), 1, 0, 0, 0, 0));
-        endOfPeriod = new Date(Date.UTC(hoje.getUTCFullYear(), hoje.getUTCMonth() + 1, 0, 23, 59, 59, 999));
-      }
+      const { firstDay: startOfPeriod, lastDay: endOfPeriod } = buildDateRange(queryStart, queryEnd);
+      const hoje = toZonedTime(new Date(), getTimezone());
+      hoje.setHours(0, 0, 0, 0);
 
       // Recebimentos (inclui clientes devedores)
       const receivables = await prisma.accountReceivable.findMany({
@@ -116,7 +194,8 @@ export class FinanceController {
           dataTransacao: {
             gte: startOfPeriod,
             lte: endOfPeriod
-          }
+          },
+          categoria: { notIn: ['CANCELAMENTO'] }
         }
       });
 
@@ -155,11 +234,8 @@ export class FinanceController {
       
       const whereClause: any = { storeId };
       if (queryStart && queryEnd) {
-        const startDate = new Date(`${queryStart}T00:00:00.000Z`);
-        const d = new Date(String(queryEnd));
-        d.setDate(d.getDate() + 1);
-        const endDate = new Date(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}T23:59:59.999Z`);
-        whereClause.dataTransacao = { gte: startDate, lte: endDate };
+        const { firstDay, lastDay } = buildDateRange(queryStart, queryEnd);
+        whereClause.dataTransacao = { gte: firstDay, lte: lastDay };
       }
 
       whereClause.status = 'ATIVA';
@@ -383,6 +459,14 @@ export class FinanceController {
           }
         });
 
+        // Se a transação é de uma venda, propaga a data para a venda
+        if (oldTx.saleId && dtTransacao) {
+          await tx.sale.update({
+            where: { id: oldTx.saleId },
+            data: { dataVenda: dtTransacao }
+          });
+        }
+
         // Aplicar novo impacto na nova carteira
         await tx.wallet.update({
           where: { id: walletId },
@@ -409,15 +493,22 @@ export class FinanceController {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ message: 'Não autorizado' });
 
-      const hoje = new Date();
-      hoje.setHours(0, 0, 0, 0);
+      const queryStart = req.query.startDate as string | undefined;
+      const queryEnd = req.query.endDate as string | undefined;
+      const dateWhere = queryStart && queryEnd
+        ? (() => { const r = buildDateRange(queryStart, queryEnd); return { dataVencimento: { gte: r.firstDay, lte: r.lastDay } }; })()
+        : {};
 
       const receivables = await prisma.accountReceivable.findMany({
-        where: { storeId, status: { not: 'CANCELADA' } },
+        where: {
+          storeId,
+          status: { not: 'CANCELADA' },
+          ...dateWhere
+        },
         orderBy: { dataVencimento: 'asc' },
         include: {
           customer: { select: { nomeCompleto: true } },
-          sale: { select: { id: true } },
+          sale: { select: { id: true, dataVenda: true, valorTotalLiquido: true, formaPagamento: true } },
           payments: {
             where: { tipo: 'ENTRADA', status: 'ATIVA' },
             select: { valor: true }
@@ -425,7 +516,17 @@ export class FinanceController {
         }
       });
 
-      const enriched = receivables.map(r => {
+      const hoje = new Date();
+      hoje.setHours(0, 0, 0, 0);
+
+      const enriched = receivables
+        .sort((a, b) => {
+          const aVenc = new Date(a.dataVencimento) < hoje;
+          const bVenc = new Date(b.dataVencimento) < hoje;
+          if (aVenc !== bVenc) return aVenc ? -1 : 1;
+          return new Date(a.dataVencimento).getTime() - new Date(b.dataVencimento).getTime();
+        })
+        .map(r => {
         const totalPago = r.payments.reduce((s, p) => s + Number(p.valor), 0);
         const valorOriginal = Number(r.valorParcela);
         const saldoRestante = Math.max(0, valorOriginal - totalPago);
@@ -593,6 +694,16 @@ export class FinanceController {
         return res.status(400).json({ message: 'Esta parcela já está totalmente paga' });
       }
 
+      const novoValorNumerico = Number(novoValor);
+      if (novoValorNumerico <= 0) {
+        return res.status(400).json({ message: 'novoValor deve ser positivo' });
+      }
+      if (novoValorNumerico > saldoRestante) {
+        return res.status(400).json({
+          message: `novoValor não pode exceder o saldo devedor de R$ ${saldoRestante.toFixed(2)} (já pago: R$ ${totalPago.toFixed(2)})`
+        });
+      }
+
       const numParcelas = Number(novasParcelas) || 1;
       const valorParcela = Number(novoValor) / numParcelas;
 
@@ -668,10 +779,58 @@ export class FinanceController {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ message: 'Não autorizado' });
 
-      const { descricao, categoria, fornecedor, supplierId, dataVencimento, valor } = req.body;
+      const { descricao, categoria, fornecedor, supplierId, dataVencimento, valor, isParcelado, numeroParcelas, frequencia, isFirstPaid } = req.body;
 
       if (!descricao || !dataVencimento || !valor) {
         return res.status(400).json({ message: 'Campos obrigatórios: descricao, dataVencimento, valor' });
+      }
+
+      const valorNum = Number(valor);
+
+      if (isParcelado && numeroParcelas && Number(numeroParcelas) > 1) {
+        const total = Number(numeroParcelas);
+        const valorParcela = valorNum / total;
+        const vencBase = new Date(dataVencimento);
+        const diasOffset = frequencia === 'SEMANAL' ? 7 : frequencia === 'QUINZENAL' ? 15 : 30;
+        const payables = [];
+
+        for (let i = 0; i < total; i++) {
+          const venc = new Date(vencBase);
+          venc.setDate(venc.getDate() + (i + 1) * diasOffset);
+          const isPago = isFirstPaid && i === 0;
+          payables.push({
+            storeId,
+            descricao: `${descricao} (${i + 1}/${total})`,
+            categoria,
+            fornecedor,
+            supplierId: supplierId || null,
+            dataVencimento: venc,
+            valor: Math.round(valorParcela * 100) / 100,
+            status: isPago ? 'PAGO' as const : 'PENDENTE' as const,
+            numeroParcela: i + 1,
+            totalParcelas: total,
+          });
+        }
+
+        await prisma.accountPayable.createMany({ data: payables });
+
+        if (isFirstPaid) {
+          const wallet = await prisma.wallet.findFirst({ where: { storeId } });
+          await prisma.financialTransaction.create({
+            data: {
+              storeId,
+              tipo: 'SAIDA',
+              valor: Math.round(valorParcela * 100) / 100,
+              descricao: `${descricao} (1/${total})`,
+              categoria: categoria || 'PAGAMENTO_FORNECEDOR',
+              fornecedor,
+              walletId: wallet?.id || '',
+              dataTransacao: new Date(),
+            }
+          });
+        }
+
+        return res.status(201).json({ message: `${total} parcelas criadas com sucesso!` });
       }
 
       const payable = await prisma.accountPayable.create({
@@ -682,7 +841,9 @@ export class FinanceController {
           fornecedor,
           supplierId: supplierId || null,
           dataVencimento: new Date(dataVencimento),
-          valor: Number(valor)
+          valor: valorNum,
+          numeroParcela: 1,
+          totalParcelas: 1,
         }
       });
 
@@ -747,20 +908,23 @@ export class FinanceController {
       }
 
       await prisma.$transaction(async (tx) => {
-        await tx.accountPayable.update({
-          where: { id },
-          data: { status: 'PAGO' }
-        });
-
+        // Cria a transação financeira de saída
         await tx.financialTransaction.create({
           data: {
             storeId,
             walletId,
             tipo: 'SAIDA',
             valor: Number(payable.valor),
-            descricao: `Pagamento de Conta: ${payable.descricao}`,
-            categoria: payable.categoria || 'Despesas'
+            descricao: `Pagamento: ${payable.descricao}`,
+            categoria: payable.categoria || 'PAGAMENTO_FORNECEDOR',
+            dataTransacao: new Date(),
+            supplierId: payable.supplierId || undefined,
           }
+        });
+
+        await tx.accountPayable.update({
+          where: { id },
+          data: { status: 'PAGO' }
         });
 
         await tx.wallet.update({
@@ -779,7 +943,8 @@ export class FinanceController {
   static async bulkAction(req: Request, res: Response) {
     try {
       const storeId = req.user?.storeId as string;
-      if (!storeId) return res.status(401).json({ message: 'Não autorizado' });
+      const userId = req.user?.id as string;
+      if (!storeId || !userId) return res.status(401).json({ message: 'Não autorizado' });
 
       const { entityType, action, ids, walletId } = req.body;
       if (!ids || !Array.isArray(ids) || ids.length === 0) {
@@ -788,18 +953,57 @@ export class FinanceController {
 
       await prisma.$transaction(async (tx) => {
         if (action === 'DELETE') {
+          const processedSaleIds = new Set<string>();
+
           if (entityType === 'TRANSACTION') {
-            const txs = await tx.financialTransaction.findMany({ where: { id: { in: ids }, storeId } });
-            // Estorno do saldo
+            const txs = await tx.financialTransaction.findMany({
+              where: { id: { in: ids }, storeId },
+            });
             for (const t of txs) {
               if (t.tipo === 'ENTRADA') {
                 await tx.wallet.update({ where: { id: t.walletId }, data: { saldoAtual: { decrement: Number(t.valor) } } });
               } else if (t.tipo === 'SAIDA') {
                 await tx.wallet.update({ where: { id: t.walletId }, data: { saldoAtual: { increment: Number(t.valor) } } });
               }
+              if (t.saleId && !processedSaleIds.has(t.saleId)) {
+                processedSaleIds.add(t.saleId);
+                const sale = await tx.sale.findUnique({
+                  where: { id: t.saleId },
+                  include: { saleItems: true },
+                });
+                if (sale) {
+                  await deleteSaleTree(tx, sale, storeId, userId);
+                }
+              }
             }
             await tx.financialTransaction.deleteMany({ where: { id: { in: ids }, storeId } });
           } else if (entityType === 'RECEIVABLE') {
+            const recs = await tx.accountReceivable.findMany({
+              where: { id: { in: ids }, storeId },
+              include: { payments: { select: { id: true, walletId: true, tipo: true, valor: true } } },
+            });
+            for (const rec of recs) {
+              if (rec.saleId && !processedSaleIds.has(rec.saleId)) {
+                processedSaleIds.add(rec.saleId);
+                const sale = await tx.sale.findUnique({
+                  where: { id: rec.saleId },
+                  include: { saleItems: true },
+                });
+                if (sale) {
+                  await deleteSaleTree(tx, sale, storeId, userId);
+                }
+              }
+              if (!rec.saleId) {
+                for (const payment of rec.payments) {
+                  if (payment.tipo === 'ENTRADA') {
+                    await tx.wallet.update({ where: { id: payment.walletId }, data: { saldoAtual: { decrement: Number(payment.valor) } } });
+                  } else if (payment.tipo === 'SAIDA') {
+                    await tx.wallet.update({ where: { id: payment.walletId }, data: { saldoAtual: { increment: Number(payment.valor) } } });
+                  }
+                  await tx.financialTransaction.delete({ where: { id: payment.id } });
+                }
+              }
+            }
             await tx.accountReceivable.deleteMany({ where: { id: { in: ids }, storeId } });
           } else if (entityType === 'PAYABLE') {
             await tx.accountPayable.deleteMany({ where: { id: { in: ids }, storeId } });
@@ -814,6 +1018,7 @@ export class FinanceController {
                 payments: { where: { tipo: 'ENTRADA', status: 'ATIVA' }, select: { valor: true } }
               }
             });
+            const idsQuitados: string[] = [];
             for (const r of recs) {
               const totalPago = r.payments.reduce((s, p) => s + Number(p.valor), 0);
               const saldoRestante = Number(r.valorParcela) - totalPago;
@@ -827,19 +1032,26 @@ export class FinanceController {
                 }
               });
               await tx.wallet.update({ where: { id: walletId }, data: { saldoAtual: { increment: saldoRestante } } });
+              idsQuitados.push(r.id);
             }
-            await tx.accountReceivable.updateMany({
-              where: { id: { in: ids }, storeId, status: { not: 'CANCELADA' } },
-              data: { status: 'PAGO_PARCIAL' }
-            });
+            if (idsQuitados.length > 0) {
+              await tx.accountReceivable.updateMany({
+                where: { id: { in: idsQuitados }, storeId, status: { not: 'CANCELADA' } },
+                data: { status: 'PAGO_PARCIAL' }
+              });
+            }
           } else if (entityType === 'PAYABLE') {
             const pays = await tx.accountPayable.findMany({ where: { id: { in: ids }, storeId, status: 'PENDENTE' } });
             for (const p of pays) {
               await tx.financialTransaction.create({
                 data: {
-                  storeId, walletId, tipo: 'SAIDA', valor: Number(p.valor),
-                  descricao: `Pagamento de Conta: ${p.descricao}`,
-                  categoria: p.categoria || 'Despesas'
+                  storeId, walletId,
+                  tipo: 'SAIDA',
+                  valor: Number(p.valor),
+                  descricao: `Pagamento em massa: ${p.descricao}`,
+                  categoria: p.categoria || 'PAGAMENTO_FORNECEDOR',
+                  dataTransacao: new Date(),
+                  supplierId: p.supplierId || undefined,
                 }
               });
               await tx.wallet.update({ where: { id: walletId }, data: { saldoAtual: { decrement: Number(p.valor) } } });
@@ -853,9 +1065,9 @@ export class FinanceController {
       });
 
       return res.json({ message: 'Ação em massa executada com sucesso' });
-    } catch (error) {
-      console.error('Erro no bulkAction:', error);
-      return res.status(500).json({ message: 'Erro interno do servidor' });
+    } catch (error: any) {
+      console.error('Erro no bulkAction:', error?.message || error);
+      return res.status(500).json({ error: error?.message || 'Erro interno do servidor' });
     }
   }
 }

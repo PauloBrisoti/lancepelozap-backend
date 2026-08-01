@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { prisma } from "../lib/prisma";
+import { ReturnsService, ReturnsServiceError } from '../services/ReturnsService';
 
 export class ReturnsController {
   async list(req: Request, res: Response) {
@@ -232,58 +233,14 @@ export class ReturnsController {
       const userId = req.user?.id as string;
       if (!storeId || !userId) return res.status(401).json({ message: "Usuário ou loja não identificados" });
 
-      const ret = await prisma.productReturn.findFirst({
-        where: { id: req.params.id as string, storeId },
-        include: { items: true },
-      });
-      if (!ret) return res.status(404).json({ message: "Devolução não encontrada" });
-      if (ret.status !== "APROVADO") {
-        return res.status(400).json({ message: `Devolução precisa estar APROVADA para ser concluída (status atual: ${ret.status})` });
-      }
-
-      // Restock products and create stock movements
-      for (const item of ret.items) {
-        const product = await prisma.product.findUnique({ where: { id: item.productId } });
-        if (!product) continue;
-
-        const qtd = Number(item.quantidade);
-        const saldoAnterior = Number(product.qtdEstoqueAtual);
-        const saldoPosterior = saldoAnterior + qtd;
-
-        await prisma.product.update({
-          where: { id: product.id },
-          data: { qtdEstoqueAtual: saldoPosterior },
-        });
-
-        await prisma.stockMovement.create({
-          data: {
-            storeId,
-            productId: product.id,
-            userId,
-            tipo: "ENTRADA",
-            quantidade: qtd,
-            saldoAnterior,
-            saldoPosterior,
-            referenciaId: ret.id,
-            observacao: `Devolução #${ret.id.slice(0, 8)}`,
-          },
-        });
-      }
-
-      const updated = await prisma.productReturn.update({
-        where: { id: ret.id },
-        data: { status: "CONCLUIDO" },
-        include: {
-          items: {
-            include: { product: { select: { id: true, nome: true, codigoVisual: true } } },
-          },
-          sale: { select: { id: true, dataVenda: true } },
-          customer: { select: { id: true, nomeCompleto: true } },
-        },
-      });
+      const returnId = req.params.id as string;
+      const updated = await ReturnsService.completeReturn(storeId, userId, returnId);
 
       res.json(updated);
-    } catch (error) {
+    } catch (error: any) {
+      if (error instanceof ReturnsServiceError) {
+        return res.status(error.httpCode).json({ message: error.message });
+      }
       console.error("Erro ao concluir devolução:", error);
       res.status(500).json({ message: "Erro interno do servidor" });
     }

@@ -4,8 +4,21 @@ dist/
 .env.*
 !.env.example
 *.log
+imports.log
+*.dump
 uploads/
 *.tsbuildinfo
 coverage/
 .DS_Store
 node_modules
+
+# Duplicatas antigas na raiz (fonte real: src/) — removidas em 99d10b2
+/app.ts
+/server.ts
+/schema.prisma
+*.bak
+._*
+scratch/
+/config/
+/middlewares/
+/backend

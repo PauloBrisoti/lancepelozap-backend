@@ -35,18 +35,28 @@ export class SmartImportController {
 
       const { prisma } = await import('../lib/prisma');
 
-      // Deletar as transações financeiras
-      await prisma.financialTransaction.deleteMany({ where: { storeId } });
-      
-      // Deletar Contas a Pagar e Receber
+      // Ordem de deleção: filhos antes dos pais para respeitar FKs.
+      // Usamos $executeRaw para contornar bug do @prisma/adapter-pg que gera
+      // erro P2021 (TableDoesNotExist) ao gerar SQL de delete com triggers internas.
+      const safeStoreId = storeId.replace(/'/g, "''");
+
+      // 1. Itens de vendas (filho de Sale)
+      await prisma.$executeRawUnsafe(
+        `DELETE FROM sale_items WHERE "sale_id" IN (SELECT id FROM sales WHERE store_id = '${safeStoreId}')`
+      );
+      // 2. Vendas (pai de SaleItem, referenciado por FinancialTransaction)
+      await prisma.$executeRawUnsafe(
+        `DELETE FROM sales WHERE store_id = '${safeStoreId}'`
+      );
+      // 3. Transações financeiras
+      await prisma.$executeRawUnsafe(
+        `DELETE FROM financial_transactions WHERE store_id = '${safeStoreId}'`
+      );
+      // 4. Contas a Pagar e Receber
       await prisma.accountPayable.deleteMany({ where: { storeId } });
       await prisma.accountReceivable.deleteMany({ where: { storeId } });
 
-      // Deletar itens da venda e depois as vendas
-      await prisma.saleItem.deleteMany({ where: { sale: { storeId } } });
-      await prisma.sale.deleteMany({ where: { storeId } });
-
-      // Zerar o Saldo da Carteira (Wallet)
+      // 5. Zerar o Saldo da Carteira (Wallet)
       await prisma.wallet.updateMany({
         where: { storeId },
         data: { saldoAtual: 0 }

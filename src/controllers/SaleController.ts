@@ -3,8 +3,54 @@ import { prisma } from "../lib/prisma";
 import { StockMovementService } from "../services/StockMovementService";
 import { WhatsAppService } from "../services/WhatsAppService";
 import { FeeCalculationService } from "../services/FeeCalculationService";
+import { comparePassword } from "../utils/password";
+import { buildDateRange } from "../lib/dateUtils";
 
 export class SaleController {
+  async summary(req: Request, res: Response) {
+    try {
+      const storeId = req.user?.storeId || (req.user as any)?.tenant_id;
+      if (!storeId) {
+        return res.status(401).json({ message: "Tenant ID não encontrado no token" });
+      }
+
+      const { startDate, endDate, prevStartDate, prevEndDate } = req.query;
+
+      const summarize = async (s: string, e: string) => {
+        const { firstDay, lastDay } = buildDateRange(s, e);
+        const sales = await prisma.sale.findMany({
+          where: {
+            storeId,
+            status: { not: 'CANCELADA' },
+            dataVenda: { gte: firstDay, lte: lastDay },
+          },
+          select: {
+            valorTotalLiquido: true,
+            saleItems: { select: { quantidade: true } },
+          },
+        });
+        const valor = sales.reduce((acc, x) => acc + Number(x.valorTotalLiquido), 0);
+        const itens = sales.reduce((acc, x) => acc + x.saleItems.reduce((b, i) => b + Number(i.quantidade), 0), 0);
+        return {
+          total: sales.length,
+          valor,
+          ticketMedio: sales.length ? valor / sales.length : 0,
+          itens,
+        };
+      };
+
+      const current = await summarize(startDate as string, endDate as string);
+      const previous = prevStartDate && prevEndDate
+        ? await summarize(prevStartDate as string, prevEndDate as string)
+        : null;
+
+      res.json({ current, previous });
+    } catch (error) {
+      console.error('Erro ao gerar resumo de vendas:', error);
+      res.status(500).json({ message: 'Erro interno ao calcular resumo de vendas.' });
+    }
+  }
+
   async list(req: Request, res: Response) {
     try {
       const storeId = req.user?.storeId || (req.user as any)?.tenant_id;
@@ -16,18 +62,8 @@ export class SaleController {
       const whereClause: any = { storeId };
 
       if (startDate && endDate) {
-        const start = new Date(`${startDate}T00:00:00.000Z`);
-        // Add 1 day to end to include sales in UTC that fall after local midnight
-        const endStr = String(endDate);
-        const endPlus1 = new Date(endStr);
-        endPlus1.setDate(endPlus1.getDate() + 1);
-        const endStr2 = endPlus1.toISOString().split('T')[0];
-        const end = new Date(`${endStr2}T23:59:59.999Z`);
-
-        whereClause.dataVenda = {
-          gte: start,
-          lte: end
-        };
+        const { firstDay, lastDay } = buildDateRange(startDate as string, endDate as string);
+        whereClause.dataVenda = { gte: firstDay, lte: lastDay };
       }
 
       whereClause.status = { not: 'CANCELADA' };
@@ -119,8 +155,12 @@ export class SaleController {
         itens, 
         formaPagamento, 
         valorDesconto = 0, 
+        valorAcrescimo = 0,
         valorSinal = 0, 
-        numeroParcelas = 1 
+        numeroParcelas = 1,
+        dataVenda,
+        formaPagamentoEntrada,
+        repasseTaxa = false,
       } = req.body;
 
       if (!itens || itens.length === 0) {
@@ -150,6 +190,16 @@ export class SaleController {
         commissionByCategory.set(key, Number(rule.percentual));
       }
 
+      // Load store config (cartaoImediato)
+      const storeConfig = await prisma.store.findUnique({
+        where: { id: storeId },
+        select: { cartaoImediato: true }
+      });
+      const cartaoImediato = storeConfig?.cartaoImediato ?? true;
+
+      // Resolve sale date: use client-provided or current timestamp
+      const saleDate = dataVenda ? new Date(dataVenda) : new Date();
+
       // 1. Transaction Start
       const result = await prisma.$transaction(async (tx) => {
         let valorTotalBruto = 0;
@@ -169,27 +219,28 @@ export class SaleController {
 
           const qte = Number(item.quantidade);
           const preco = Number(item.precoUnitarioVendido);
-          const subtotal = qte * preco;
+          const subtotal = Math.round(qte * preco * 100) / 100;
           const qtdAnterior = Number(product.qtdEstoqueAtual);
           
           valorTotalBruto += subtotal;
 
           // CMV: usa custo real do produto, ou fallback de 70% do preço de venda
           const custoUnitario = Number(product.precoCusto || 0);
-          const custoFinal = custoUnitario > 0 ? custoUnitario : preco * 0.7;
-          cmvTotal += custoFinal * qte;
+          const custoFinal = custoUnitario > 0 ? custoUnitario : Math.round(preco * 0.7 * 100) / 100;
+          cmvTotal += Math.round(custoFinal * qte * 100) / 100;
 
-          // Calculate commission for this item
+          // Calculate commission for this item (percentual definido pela regra)
           const catKey = product.categoryId || '__default__';
           const pct = commissionByCategory.get(catKey) ?? commissionByCategory.get('__default__') ?? 0;
-          const comissaoItem = subtotal * (pct / 100);
 
           saleItemsData.push({
             productId: product.id,
             quantidade: qte,
             precoUnitarioVendido: preco,
             custoUnitarioHistorico: custoFinal,
-            comissaoVendedorValor: comissaoItem,
+            comissaoPercentual: pct,
+            comissaoBaseBruta: subtotal,
+            comissaoVendedorValor: 0, // recalculado abaixo, após conhecer desconto/taxas da venda
           });
 
           // 3. Update stock (Permitindo negativar se for o caso)
@@ -215,21 +266,42 @@ export class SaleController {
         }
 
         // 3.5 Calcular Taxas de Gateway (cartão, pix, etc.)
-        // Usa o FeeCalculationService para validar a configuração no banco
-        // e calcular o valor das taxas de forma centralizada
+        const acrescimoDigitado = Number(valorAcrescimo);
+        const valorBaseBruto = valorTotalBruto + acrescimoDigitado;
+
         const feeResult = await FeeCalculationService.execute({
           storeId,
           formaPagamento,
           parcela: Number(numeroParcelas) || 1,
-          valorTotalBruto,
+          valorTotalBruto: valorBaseBruto,
         });
 
         const { valorTaxasGateway } = feeResult;
+
+        // Cenário A (repasseTaxa=true): taxa é adicionada como acréscimo no total
+        // Cenário B (repasseTaxa=false): taxa é descontada do líquido (comportamento legado)
+        if (repasseTaxa) {
+          valorTotalBruto = Math.round((valorBaseBruto + valorTaxasGateway) * 100) / 100;
+        } else {
+          valorTotalBruto = Math.round(valorBaseBruto * 100) / 100;
+        }
+
         const valorTotalLiquido = FeeCalculationService.calcularValorLiquido(
           valorTotalBruto,
           Number(valorDesconto),
           valorTaxasGateway
         );
+
+        // Comissão é calculada sobre o valor líquido da venda (após desconto e taxas),
+        // proporcionalizado por item conforme seu peso no total bruto.
+        for (const itemData of saleItemsData) {
+          const baseLiquida = valorTotalBruto > 0
+            ? (itemData.comissaoBaseBruta * valorTotalLiquido) / valorTotalBruto
+            : 0;
+          itemData.comissaoVendedorValor = Math.round((baseLiquida * itemData.comissaoPercentual / 100 + Number.EPSILON) * 100) / 100;
+          delete itemData.comissaoBaseBruta;
+          delete itemData.comissaoPercentual;
+        }
 
         // 4. Create Sale
         const sale = await tx.sale.create({
@@ -238,11 +310,12 @@ export class SaleController {
             userId,
             customerId: customerId || null,
             cashRegisterId: cashRegisterId || null,
-            valorTotalBruto,
+            dataVenda: saleDate,
+            valorTotalBruto: Math.round(valorTotalBruto * 100) / 100,
             valorDesconto: Number(valorDesconto),
-            valorTaxasGateway,
-            valorTotalLiquido,
-            cmvTotal,
+            valorTaxasGateway: Math.round(valorTaxasGateway * 100) / 100,
+            valorTotalLiquido: Math.round(valorTotalLiquido * 100) / 100,
+            cmvTotal: Math.round(cmvTotal * 100) / 100,
             formaPagamento,
             valorSinal: Number(valorSinal),
             numeroParcelas: Number(numeroParcelas),
@@ -255,14 +328,15 @@ export class SaleController {
 
         // 5. Generate Receivables for Crediario
         if (formaPagamento === 'CREDIARIO' && customerId) {
-          const valorRestante = valorTotalLiquido - Number(valorSinal);
+          const valorRestante = Math.round((valorTotalLiquido - Number(valorSinal)) * 100) / 100;
+          console.log('[DEBUG crediario] PASSOU NO CHECK, valorRestante:', valorRestante);
           if (valorRestante > 0) {
             const numParcelas = Number(numeroParcelas) || 1;
             const parcelaBase = Math.round((valorRestante / numParcelas) * 100) / 100;
             const primeiraParcela = valorRestante - (parcelaBase * (numParcelas - 1));
 
             for (let i = 1; i <= numParcelas; i++) {
-              const dataVencimento = new Date();
+              const dataVencimento = new Date(saleDate);
               dataVencimento.setDate(dataVencimento.getDate() + (i * 30));
 
               const valorParcela = i === 1 ? primeiraParcela : parcelaBase;
@@ -285,8 +359,32 @@ export class SaleController {
         }
 
         // 6. Sincronizar com o Painel Financeiro
-        const valorPagoAgora = formaPagamento === 'CREDIARIO' ? Number(valorSinal) : valorTotalLiquido;
-        
+        const ehCartao = formaPagamento === 'CARTAO_CREDITO' || formaPagamento === 'CARTAO_DEBITO';
+        const ehCrediario = formaPagamento === 'CREDIARIO';
+        const usarProjecao = ehCartao && !cartaoImediato;
+
+        const valorPagoAgora = ehCrediario ? Number(valorSinal) : (usarProjecao ? 0 : valorTotalLiquido);
+
+        if (usarProjecao && feeResult.feeConfig && feeResult.feeConfig.prazoRecebimento > 0) {
+          // Projeção: criar AccountReceivable para D+prazo
+          const dataVencimento = new Date(saleDate);
+          dataVencimento.setDate(dataVencimento.getDate() + feeResult.feeConfig.prazoRecebimento);
+
+          await tx.accountReceivable.create({
+            data: {
+              storeId,
+              saleId: sale.id,
+              customerId: customerId || null,
+              numeroParcela: 1,
+              totalParcelas: 1,
+              valorParcela: Math.round(valorTotalLiquido * 100) / 100,
+              dataVencimento,
+              formaPagamentoEsperada: formaPagamentoEntrada || formaPagamento,
+              status: 'PENDENTE',
+            }
+          });
+        }
+
         if (valorPagoAgora > 0) {
           // Busca a carteira principal (ou cria se não existir)
           let wallet = await tx.wallet.findFirst({ where: { storeId } });
@@ -309,12 +407,26 @@ export class SaleController {
               walletId: wallet.id,
               saleId: sale.id,
               tipo: 'ENTRADA',
-              valor: valorPagoAgora,
+              valor: Math.round(valorPagoAgora * 100) / 100,
               descricao: `Venda #${sale.id.substring(0, 8)} - ${customerName}`,
               categoria: 'VENDAS',
-              dataTransacao: new Date()
+              formaPagamento: formaPagamentoEntrada || formaPagamento,
+              dataTransacao: saleDate,
             }
           });
+
+          // Also register CashTransaction if a cash register is open
+          if (cashRegisterId) {
+            await tx.cashTransaction.create({
+              data: {
+                cashRegisterId,
+                tipo: 'ENTRADA',
+                valor: valorPagoAgora,
+                descricao: `Venda #${sale.id.substring(0, 8)} - ${customerName}`,
+                createdAt: saleDate,
+              }
+            });
+          }
 
           // Atualiza saldo da carteira
           await tx.wallet.update({
@@ -394,7 +506,7 @@ export class SaleController {
       if (!storeId) return res.status(401).json({ message: "Tenant ID não encontrado" });
 
       const id = req.params.id as string;
-      const { customerId, formaPagamento, valorDesconto, valorSinal, numeroParcelas, observacoes } = req.body;
+      const { customerId, formaPagamento, valorDesconto, valorSinal, numeroParcelas, observacoes, dataVenda } = req.body;
 
       const sale = await prisma.sale.findFirst({
         where: { id, storeId },
@@ -410,6 +522,7 @@ export class SaleController {
         if (customerId !== undefined) updateData.customerId = customerId || null;
         if (formaPagamento !== undefined) updateData.formaPagamento = formaPagamento;
         if (numeroParcelas !== undefined) updateData.numeroParcelas = Number(numeroParcelas);
+        if (dataVenda !== undefined) updateData.dataVenda = new Date(dataVenda);
 
         // Recalcular taxas se formaPagamento ou numeroParcelas mudar
         const novoPagamento = formaPagamento ?? sale.formaPagamento;
@@ -424,7 +537,7 @@ export class SaleController {
         });
 
         if (formaPagamento !== undefined || numeroParcelas !== undefined) {
-          updateData.valorTaxasGateway = feeResult.valorTaxasGateway;
+          updateData.valorTaxasGateway = Math.round(feeResult.valorTaxasGateway * 100) / 100;
         }
 
         updateData.valorDesconto = novoDesconto;
@@ -434,13 +547,50 @@ export class SaleController {
           feeResult.valorTaxasGateway
         );
 
-        if (valorSinal !== undefined) updateData.valorSinal = Number(valorSinal);
+        if (valorSinal !== undefined) updateData.valorSinal = Math.round(Number(valorSinal) * 100) / 100;
         if (observacoes !== undefined) updateData.observacoes = observacoes;
 
         await tx.sale.update({ where: { id }, data: updateData });
 
         const updatedSale = await tx.sale.findUnique({ where: { id } });
         if (!updatedSale) return;
+
+        // Recalcular comissão dos itens: ela é proporcional ao valor líquido da venda
+        // (após desconto/taxas), então precisa ser ajustada se esses valores mudaram.
+        if (valorDesconto !== undefined || formaPagamento !== undefined || numeroParcelas !== undefined) {
+          const valorBrutoAtual = Number(updatedSale.valorTotalBruto);
+          if (valorBrutoAtual > 0) {
+            const valorLiquidoAtual = Number(updatedSale.valorTotalLiquido);
+            const rulesAtualizadas = await tx.commissionRule.findMany({
+              where: { storeId, userId: sale.userId, ativo: true },
+            });
+            const pctPorCategoria = new Map<string, number>();
+            for (const rule of rulesAtualizadas) {
+              pctPorCategoria.set(rule.categoryId || '__default__', Number(rule.percentual));
+            }
+            const itensDaVenda = await tx.saleItem.findMany({
+              where: { saleId: id },
+              include: { product: { select: { categoryId: true } } },
+            });
+            for (const itemDaVenda of itensDaVenda) {
+              if (itemDaVenda.commissionPaidAt) continue;
+              const catKey = itemDaVenda.product?.categoryId || '__default__';
+              const pct = pctPorCategoria.get(catKey) ?? pctPorCategoria.get('__default__') ?? 0;
+              const subtotalItem = Number(itemDaVenda.quantidade) * Number(itemDaVenda.precoUnitarioVendido);
+              const baseLiquidaItem = (subtotalItem * valorLiquidoAtual) / valorBrutoAtual;
+              const novaComissao = Math.round((baseLiquidaItem * pct / 100 + Number.EPSILON) * 100) / 100;
+              await tx.saleItem.update({ where: { id: itemDaVenda.id }, data: { comissaoVendedorValor: novaComissao } });
+            }
+          }
+        }
+
+        // Se dataVenda mudou, propaga para as transações financeiras existentes
+        if (dataVenda !== undefined) {
+          await tx.financialTransaction.updateMany({
+            where: { saleId: id },
+            data: { dataTransacao: updatedSale.dataVenda }
+          });
+        }
 
         // Recriar receivables se for crediario e houve mudança
         const pagamentoFinal = formaPagamento ?? sale.formaPagamento;
@@ -452,7 +602,7 @@ export class SaleController {
           if (sale.receivables.length > 0) {
             // Reverter receivables pendentes existentes
             for (const rec of sale.receivables) {
-              if (rec.status === 'PENDENTE' || rec.status === 'VENCIDO') {
+              if (rec.status === 'PENDENTE') {
                 await tx.accountReceivable.update({ where: { id: rec.id }, data: { status: 'CANCELADA' } });
               }
             }
@@ -469,7 +619,7 @@ export class SaleController {
           // Recriar receivables com novos valores
           const customerIdFinal = customerId ?? sale.customerId;
           if (customerIdFinal) {
-            const valorRestante = liquidoFinal - sinalFinal;
+            const valorRestante = Math.round((liquidoFinal - sinalFinal) * 100) / 100;
             if (valorRestante > 0) {
               const parcelaBase = Math.round((valorRestante / parcelasFinal) * 100) / 100;
               const primeiraParcela = valorRestante - (parcelaBase * (parcelasFinal - 1));
@@ -495,15 +645,29 @@ export class SaleController {
                 wallet = await tx.wallet.create({ data: { storeId, nome: 'Caixa Interno', tipo: 'EMPRESA', saldoAtual: 0 } });
               }
               const customer = customerIdFinal ? await tx.customer.findUnique({ where: { id: customerIdFinal } }) : null;
+              const sinalFinalRounded = Math.round(sinalFinal * 100) / 100;
               await tx.financialTransaction.create({
                 data: {
                   storeId, walletId: wallet.id, saleId: id, tipo: 'ENTRADA',
-                  valor: sinalFinal,
+                  valor: sinalFinalRounded,
                   descricao: `Sinal (edição) Venda #${id.substring(0, 8)} - ${customer?.nomeCompleto || 'Balcão'}`,
-                  categoria: 'VENDAS', dataTransacao: new Date()
+                  categoria: 'VENDAS', dataTransacao: updatedSale.dataVenda,
                 }
               });
-              await tx.wallet.update({ where: { id: wallet.id }, data: { saldoAtual: { increment: sinalFinal } } });
+              await tx.wallet.update({ where: { id: wallet.id }, data: { saldoAtual: { increment: sinalFinalRounded } } });
+
+              // Atualizar CashTransaction se houver caixa aberto
+              if (sale.cashRegisterId) {
+                await tx.cashTransaction.create({
+                  data: {
+                    cashRegisterId: sale.cashRegisterId,
+                    tipo: 'ENTRADA',
+                    valor: sinalFinalRounded,
+                    descricao: `Sinal (edição) Venda #${id.substring(0, 8)} - ${customer?.nomeCompleto || 'Balcão'}`,
+                    createdAt: updatedSale.dataVenda,
+                  }
+                });
+              }
             }
           }
         } else {
@@ -527,15 +691,29 @@ export class SaleController {
               }
               const customerIdFinal = customerId ?? sale.customerId;
               const customer = customerIdFinal ? await tx.customer.findUnique({ where: { id: customerIdFinal } }) : null;
+              const liquidoFinalRounded = Math.round(liquidoFinal * 100) / 100;
               await tx.financialTransaction.create({
                 data: {
                   storeId, walletId: wallet.id, saleId: id, tipo: 'ENTRADA',
-                  valor: liquidoFinal,
+                  valor: liquidoFinalRounded,
                   descricao: `Venda #${id.substring(0, 8)} (editada) - ${customer?.nomeCompleto || 'Balcão'}`,
-                  categoria: 'VENDAS', dataTransacao: new Date()
+                  categoria: 'VENDAS', dataTransacao: updatedSale.dataVenda,
                 }
               });
-              await tx.wallet.update({ where: { id: wallet.id }, data: { saldoAtual: { increment: liquidoFinal } } });
+
+              // Criar CashTransaction se houver caixa aberto
+              if (sale.cashRegisterId) {
+                await tx.cashTransaction.create({
+                  data: {
+                    cashRegisterId: sale.cashRegisterId,
+                    tipo: 'ENTRADA',
+                    valor: liquidoFinalRounded,
+                    descricao: `Venda #${id.substring(0, 8)} (editada) - ${customer?.nomeCompleto || 'Balcão'}`,
+                    createdAt: updatedSale.dataVenda,
+                  }
+                });
+              }
+              await tx.wallet.update({ where: { id: wallet.id }, data: { saldoAtual: { increment: liquidoFinalRounded } } });
             }
           }
         }
@@ -598,7 +776,7 @@ export class SaleController {
 
           await tx.stockMovement.create({
             data: {
-              storeId,
+              storeId: sale.storeId,
               productId: item.productId,
               userId: req.user!.id,
               tipo: 'ENTRADA',
@@ -622,7 +800,7 @@ export class SaleController {
             // 2b. Cria transação de reversão (SAIDA = dinheiro saindo)
             await tx.financialTransaction.create({
               data: {
-                storeId,
+                storeId: sale.storeId,
                 walletId: transaction.walletId,
                 saleId: sale.id,
                 tipo: 'SAIDA',
@@ -649,6 +827,17 @@ export class SaleController {
           });
         }
 
+        // 3.5 Zerar comissão pendente dos itens (venda cancelada não gera comissão).
+        // Comissão já paga (commissionPaidAt preenchido) não é revertida aqui.
+        for (const item of sale.saleItems) {
+          if (!item.commissionPaidAt && Number(item.comissaoVendedorValor) !== 0) {
+            await tx.saleItem.update({
+              where: { id: item.id },
+              data: { comissaoVendedorValor: 0 }
+            });
+          }
+        }
+
         // 4. Mudar status da venda para CANCELADA
         const updatedSale = await tx.sale.update({
           where: { id: sale.id },
@@ -661,6 +850,100 @@ export class SaleController {
       res.json({ message: "Venda cancelada com sucesso", sale: result });
     } catch (error: any) {
       console.error("Erro ao cancelar venda:", error);
+      res.status(500).json({ message: "Erro interno do servidor", detail: error.message });
+    }
+  }
+
+  async delete(req: Request, res: Response) {
+    try {
+      const storeId = req.user?.storeId || (req.user as any)?.tenant_id;
+      if (!storeId) {
+        return res.status(401).json({ message: "Tenant ID não encontrado no token" });
+      }
+
+      const { id } = req.params;
+      const { password } = req.body;
+      if (!password) {
+        return res.status(400).json({ message: "Senha do administrador é obrigatória" });
+      }
+
+      // Verify admin password
+      const user = await prisma.user.findUnique({ where: { id: req.user!.id } });
+      if (!user || !(await comparePassword(password, user.senhaHash))) {
+        return res.status(403).json({ message: "Senha inválida" });
+      }
+
+      const sale = await prisma.sale.findFirst({
+        where: { id: String(id), storeId },
+        include: {
+          saleItems: true,
+          receivables: true,
+          financialTransactions: true,
+          productReturns: true,
+        },
+      });
+      if (!sale) return res.status(404).json({ message: "Venda não encontrada" });
+
+      await prisma.$transaction(async (tx) => {
+        // 1. Revert stock
+        for (const item of sale.saleItems) {
+          const product = await tx.product.findUnique({ where: { id: item.productId } });
+          const qtdAnterior = Number(product?.qtdEstoqueAtual || 0);
+          await tx.product.update({
+            where: { id: item.productId },
+            data: { qtdEstoqueAtual: { increment: item.quantidade } },
+          });
+          await tx.stockMovement.create({
+            data: {
+              storeId: sale.storeId,
+              productId: item.productId,
+              userId: req.user!.id,
+              tipo: 'ENTRADA',
+              quantidade: Number(item.quantidade),
+              saldoAnterior: qtdAnterior,
+              saldoPosterior: qtdAnterior + Number(item.quantidade),
+              referenciaId: sale.id,
+              observacao: 'Estorno exclusão de venda',
+            },
+          });
+        }
+
+        // 2. Cancel receivables
+        for (const receivable of sale.receivables) {
+          await tx.accountReceivable.update({
+            where: { id: receivable.id },
+            data: { status: 'CANCELADA' },
+          });
+        }
+
+        // 3. Unlink financial transactions (saleId set to null via onDelete SetNull)
+        for (const ft of sale.financialTransactions) {
+          if (ft.tipo === 'ENTRADA') {
+            await tx.financialTransaction.update({
+              where: { id: ft.id },
+              data: { status: 'ESTORNADA', saleId: null, receivableId: null },
+            });
+          }
+        }
+
+        // 4. Delete product returns linked to this sale
+        if (sale.productReturns.length > 0) {
+          for (const pr of sale.productReturns) {
+            await tx.productReturnItem.deleteMany({ where: { productReturnId: pr.id } });
+          }
+          await tx.productReturn.deleteMany({ where: { saleId: sale.id } });
+        }
+
+        // 5. Delete sale items (cascaded, but explicit for safety)
+        await tx.saleItem.deleteMany({ where: { saleId: sale.id } });
+
+        // 6. Delete sale
+        await tx.sale.delete({ where: { id: sale.id } });
+      });
+
+      res.json({ message: "Venda excluída permanentemente" });
+    } catch (error: any) {
+      console.error("Erro ao excluir venda:", error);
       res.status(500).json({ message: "Erro interno do servidor", detail: error.message });
     }
   }

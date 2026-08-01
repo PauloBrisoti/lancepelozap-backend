@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { InventoryAdjustmentController } from '../controllers/InventoryAdjustmentController';
 import { requireAuth } from '../middleware/auth';
+import { requireWorkspaceType } from '../middleware/requireWorkspaceType';
 import { requireStorePermission } from '../middleware/requireStorePermission';
 import { autoAudit } from '../middleware/autoAudit';
 import { z } from 'zod';
@@ -17,6 +18,7 @@ const adjustSchema = z.object({
 });
 
 router.use(requireAuth);
+router.use(requireWorkspaceType('PJ'));
 router.use(autoAudit());
 
 router.get('/alerts', controller.getAlerts.bind(controller));

@@ -12,13 +12,18 @@ export class SubscriptionController {
       }
 
       const subscriptions = await prisma.subscription.findMany({
-        include: {
-          client: true
-        },
+        include: { client: true, plan: true },
         orderBy: { dataVencimento: 'desc' }
       });
 
-      return res.status(200).json(subscriptions);
+      const result = subscriptions.map(sub => ({
+        ...sub,
+        plano: sub.plan?.nome || 'Desconhecido',
+        tenantId: sub.clientId,
+        tenant: sub.client ? { razaoSocial: sub.client.nomeCompleto } : undefined,
+      }));
+
+      return res.status(200).json(result);
     } catch (error) {
       console.error('Erro ao listar subscriptions:', error);
       return res.status(500).json({ message: 'Erro interno' });
@@ -33,11 +38,20 @@ export class SubscriptionController {
       if (!clientId) return res.status(401).json({ message: 'Não autorizado' });
 
       const subscription = await prisma.subscription.findFirst({
-        where: { clientId },
-        orderBy: { dataVencimento: 'desc' }
+        where: { clientId, statusPagamento: { in: ['PAGO', 'PENDENTE', 'TRIAL'] } },
+        orderBy: { dataVencimento: 'desc' },
+        include: { plan: true }
       });
 
-      return res.status(200).json(subscription || null);
+      if (!subscription) return res.status(200).json(null);
+
+      // Retorna plano com campo 'plano' para compatibilidade com o frontend
+      const { plan, ...sub } = subscription;
+      return res.status(200).json({
+        ...sub,
+        plano: plan?.nome || 'Desconhecido',
+        planId: plan?.id || sub.planId,
+      });
     } catch (error) {
       console.error('Erro ao buscar subscription do tenant:', error);
       return res.status(500).json({ message: 'Erro interno' });
@@ -48,57 +62,143 @@ export class SubscriptionController {
   static async updatePlan(req: Request, res: Response) {
     try {
       const clientId = (req.user as any)?.clientId as string;
+      const { planId, plano, valorMensalidade } = req.body;
 
-      const { plano, valorMensalidade } = req.body;
-      
       if (!clientId) return res.status(401).json({ message: 'Não autorizado' });
 
-      // Create pending subscription
+      // Se já tem assinatura PAGO, redireciona para fluxo de chamado
+      const subAtiva = await prisma.subscription.findFirst({
+        where: { clientId, statusPagamento: 'PAGO' },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (subAtiva) {
+        return res.status(400).json({
+          error: 'Você já possui uma assinatura ativa. Solicite a mudança de plano via Chamados.',
+          code: 'ACTIVE_SUBSCRIPTION',
+        });
+      }
+
+      // Lookup do plano pelo ID ou pelo nome
+      let plan = planId
+        ? await prisma.plan.findUnique({ where: { id: planId } })
+        : await prisma.plan.findFirst({ where: { nome: { contains: plano } } });
+
+      // Se ainda não achou, tenta match exato pelo nome
+      if (!plan && plano) {
+        plan = await prisma.plan.findFirst({ where: { nome: plano } });
+      }
+
+      // Cancela apenas assinaturas PENDENTE anteriores
+      await prisma.subscription.updateMany({
+        where: { clientId, statusPagamento: { in: ['PENDENTE', 'TRIAL'] } },
+        data: { statusPagamento: 'CANCELADO' },
+      });
+
+      // Cria assinatura pendente
       const novaAssinatura = await prisma.subscription.create({
         data: {
           clientId,
-          planId: plano,
+          planId: plan?.id || 'pending',
           valorMensalidade: Number(valorMensalidade),
-          dataVencimento: new Date(), // Vai ser atualizado no webhook
-          statusPagamento: 'PENDENTE'
-        }
+          dataVencimento: new Date(),
+          statusPagamento: 'PENDENTE',
+        },
       });
 
-      // Initialize Mercado Pago
-      const client = new MercadoPagoConfig({ accessToken: process.env.MP_ACCESS_TOKEN || 'TEST-000000' });
+      // Mercado Pago (se configurado)
+      const mpAccessToken = process.env.MP_ACCESS_TOKEN;
+      if (!mpAccessToken) {
+        return res.status(201).json({
+          subscription: novaAssinatura,
+          init_point: null,
+          message: 'Plano registrado. Pagamento será processado manualmente.',
+        });
+      }
+      const client = new MercadoPagoConfig({ accessToken: mpAccessToken });
       const preference = new Preference(client);
-
       const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
 
       const result = await preference.create({
         body: {
-          items: [
-            {
-              id: plano,
-              title: `Plano ${plano} - Lance Pelo Zap`,
-              quantity: 1,
-              unit_price: Number(valorMensalidade),
-              currency_id: 'BRL'
-            }
-          ],
-          external_reference: novaAssinatura.id, // Para o webhook saber qual atualizar
+          items: [{
+            id: plano,
+            title: `Plano ${plano} - Lance Pelo Zap`,
+            quantity: 1,
+            unit_price: Number(valorMensalidade),
+            currency_id: 'BRL',
+          }],
+          external_reference: novaAssinatura.id,
           back_urls: {
             success: `${frontendUrl}/app/planos?status=success`,
             pending: `${frontendUrl}/app/planos?status=pending`,
-            failure: `${frontendUrl}/app/planos?status=failure`
+            failure: `${frontendUrl}/app/planos?status=failure`,
           },
-          auto_return: 'approved'
-        }
+          auto_return: 'approved',
+        },
       });
 
-      // Retornamos o link do checkout para o frontend redirecionar
       return res.status(201).json({
         subscription: novaAssinatura,
-        init_point: result.init_point // Link de pagamento do Mercado Pago
+        init_point: result.init_point,
       });
     } catch (error) {
       console.error('Erro ao atualizar plano:', error);
       return res.status(500).json({ message: 'Erro interno' });
+    }
+  }
+
+  // Solicitar mudança de plano via chamado
+  static async requestPlanChange(req: Request, res: Response) {
+    try {
+      const storeId = (req.user as any)?.storeId as string;
+      const clientId = (req.user as any)?.clientId as string;
+      const userId = (req.user as any)?.id as string;
+      const { planId, motivo } = req.body;
+
+      if (!storeId || !clientId) {
+        return res.status(400).json({ error: 'Usuário não vinculado a uma loja.' });
+      }
+
+      const plan = await prisma.plan.findUnique({ where: { id: planId } });
+      if (!plan) return res.status(404).json({ error: 'Plano não encontrado.' });
+
+      const sub = await prisma.subscription.findFirst({
+        where: { clientId, statusPagamento: { in: ['PAGO', 'TRIAL', 'PENDENTE'] } },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      // Cria chamado com dados da solicitação
+      const ticket = await prisma.supportTicket.create({
+        data: {
+          storeId,
+          assunto: `Solicitação de Mudança de Plano`,
+          prioridade: 'P3',
+          status: 'ABERTO',
+          dadosForenses: {
+            tipo: 'MUDANCA_PLANO',
+            planoSolicitado: plan.nome,
+            planoSolicitadoId: plan.id,
+            valorSolicitado: Number(plan.precoMensal),
+            planoAtual: sub?.planId || null,
+            statusAtual: sub?.statusPagamento || null,
+            motivo: motivo || '',
+            solicitadoEm: new Date().toISOString(),
+          },
+        },
+      });
+
+      await prisma.ticketMessage.create({
+        data: {
+          ticketId: ticket.id,
+          remetente: 'CLIENTE',
+          mensagem: `Solicitação de mudança para o plano "${plan.nome}" (R$ ${Number(plan.precoMensal).toFixed(2)}/mês).${motivo ? `\n\nMotivo: ${motivo}` : ''}`,
+        },
+      });
+
+      return res.status(201).json({ message: 'Solicitação enviada com sucesso! Acompanhe pelo Chamados.', ticketId: ticket.id });
+    } catch (error) {
+      console.error('Erro ao solicitar mudança de plano:', error);
+      return res.status(500).json({ error: 'Erro ao processar solicitação.' });
     }
   }
 

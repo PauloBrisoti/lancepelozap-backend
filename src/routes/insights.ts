@@ -1,9 +1,13 @@
 import { Router } from 'express';
 import { InsightsController } from '../controllers/InsightsController';
 import { requireAuth } from '../middleware/auth';
+import { requireWorkspaceType } from '../middleware/requireWorkspaceType';
 
 export const insightsRouter = Router();
 
-insightsRouter.get('/forecast', requireAuth, InsightsController.getForecast);
-insightsRouter.get('/stock-recommendations', requireAuth, InsightsController.getStockRecommendations);
-insightsRouter.get('/anomalies', requireAuth, InsightsController.getAnomalies);
+insightsRouter.use(requireAuth);
+insightsRouter.use(requireWorkspaceType('PJ'));
+
+insightsRouter.get('/forecast', InsightsController.getForecast);
+insightsRouter.get('/stock-recommendations', InsightsController.getStockRecommendations);
+insightsRouter.get('/anomalies', InsightsController.getAnomalies);

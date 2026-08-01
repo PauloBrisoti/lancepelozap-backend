@@ -13,6 +13,16 @@ afterAll(async () => {
 });
 
 async function clearDatabase() {
+  const url = process.env.DATABASE_URL || '';
+  const dbName = (url.split('/').pop() || '').split('?')[0];
+  const isTestDb = dbName.toLowerCase().includes('test');
+  if (!isTestDb && process.env.ALLOW_DB_WIPE !== '1') {
+    throw new Error(
+      `[TEST-SAFETY] Recusando limpeza: o banco '${dbName}' não parece ser um banco de testes. ` +
+      `Defina ALLOW_DB_WIPE=1 para confirmar que pode apagar os dados, ou use um DATABASE_URL de teste (ex.: saas_test).`
+    );
+  }
+
   const tableNames = await prisma.$queryRaw<
     Array<{ tablename: string }>
   >`SELECT tablename FROM pg_tables WHERE schemaname='public'`;
