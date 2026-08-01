@@ -274,15 +274,19 @@ export async function me(req: Request, res: Response) {
     }));
 
     // Fetch store-level features for the active store
+    // Sem features configuradas (null/vazio) = todos os módulos habilitados por padrão
     if (user.storeId) {
       const store = await prisma.store.findUnique({
         where: { id: user.storeId },
         select: { features: true }
       });
       if (store?.features) {
-        try { user.features = JSON.parse(store.features); } catch { user.features = {}; }
-      } else {
-        user.features = {};
+        try {
+          const parsed = JSON.parse(store.features);
+          if (parsed && Object.keys(parsed).length > 0) {
+            user.features = parsed;
+          }
+        } catch { /* features inválido — trata como não configurado */ }
       }
     }
 
