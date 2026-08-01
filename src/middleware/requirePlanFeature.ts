@@ -10,7 +10,12 @@ type Feature =
   | 'multiplas_lojas'
   | 'crediario'
   | 'relatorios'
-  | 'suporte_prioritario';
+  | 'suporte_prioritario'
+  | 'whatsapp'
+  | 'caixa'
+  | 'ordem_servico'
+  | 'comissoes'
+  | 'transferencia_estoque';
 
 const DEFAULT_FEATURES: Record<Feature, boolean> = {
   catalogo: true,
@@ -21,6 +26,11 @@ const DEFAULT_FEATURES: Record<Feature, boolean> = {
   crediario: false,
   relatorios: false,
   suporte_prioritario: false,
+  whatsapp: false,
+  caixa: false,
+  ordem_servico: false,
+  comissoes: false,
+  transferencia_estoque: false,
 };
 
 export function requirePlanFeature(feature: Feature) {
@@ -37,7 +47,7 @@ export function requirePlanFeature(feature: Feature) {
 
       const store = await prisma.store.findUnique({
         where: { id: storeId },
-        select: { control: { select: { clientId: true } } }
+        select: { features: true, control: { select: { clientId: true } } }
       });
 
       if (!store) {
@@ -60,6 +70,12 @@ export function requirePlanFeature(feature: Feature) {
       const features: Record<string, boolean> = subscription.plan.features
         ? { ...DEFAULT_FEATURES, ...JSON.parse(subscription.plan.features) }
         : { ...DEFAULT_FEATURES };
+
+      // Store-level features override plan features (Super Admin toggle)
+      if (store.features) {
+        const storeFeatures: Record<string, boolean> = JSON.parse(store.features);
+        Object.assign(features, storeFeatures);
+      }
 
       if (!features[feature]) {
         return fail(res, `Seu plano não inclui a funcionalidade "${feature}". Faça upgrade para liberar.`, 403);

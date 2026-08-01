@@ -1,11 +1,15 @@
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth';
+import { requireWorkspaceType } from '../middleware/requireWorkspaceType';
+import { requirePlanFeature } from '../middleware/requirePlanFeature';
 import { ServiceOrderController } from '../controllers/ServiceOrderController';
 
 const router = Router();
 const ctrl = new ServiceOrderController();
 
 router.use(requireAuth);
+router.use(requireWorkspaceType('PJ'));
+router.use(requirePlanFeature('ordem_servico'));
 
 // Service Types
 router.get('/service-types', ctrl.listServiceTypes.bind(ctrl));

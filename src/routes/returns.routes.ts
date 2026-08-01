@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { ReturnsController } from "../controllers/ReturnsController";
 import { requireAuth } from "../middleware/auth";
+import { requireWorkspaceType } from '../middleware/requireWorkspaceType';
 import { requireStorePermission } from "../middleware/requireStorePermission";
 import { autoAudit } from "../middleware/autoAudit";
 
@@ -8,6 +9,7 @@ const returnsRouter = Router();
 const controller = new ReturnsController();
 
 returnsRouter.use(requireAuth);
+returnsRouter.use(requireWorkspaceType('PJ'));
 returnsRouter.use(autoAudit());
 
 returnsRouter.get("/", controller.list);

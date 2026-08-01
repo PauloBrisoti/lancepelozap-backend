@@ -2,12 +2,16 @@ import { Router } from 'express';
 import { DashboardController } from '../controllers/DashboardController';
 import { DashboardPJController } from '../controllers/DashboardPJController';
 import { requireAuth } from '../middleware/auth';
+import { requireWorkspaceType } from '../middleware/requireWorkspaceType';
 
 const router = Router();
 
-router.get('/tenant', requireAuth, DashboardController.getTenantDashboard);
-router.get('/super-adm', requireAuth, DashboardController.getSuperAdmDashboard);
-router.get('/pj', requireAuth, DashboardPJController.getDashboardMetrics);
-router.get('/pj/consolidated', requireAuth, DashboardPJController.getConsolidated);
+router.use(requireAuth);
+router.use(requireWorkspaceType('PJ'));
+
+router.get('/tenant', DashboardController.getTenantDashboard);
+router.get('/super-adm', DashboardController.getSuperAdmDashboard);
+router.get('/pj', DashboardPJController.getDashboardMetrics);
+router.get('/pj/consolidated', DashboardPJController.getConsolidated);
 
 export default router;

@@ -344,7 +344,6 @@ async function main() {
         formaPagamentoEsperada: 'DINHEIRO',
         status: 'PAGO',
         dataPagamentoEfetivo: daysAgo(0),
-        valorPago: remaining2 / 2,
       },
       {
         storeId: store.id,

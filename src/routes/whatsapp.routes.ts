@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth';
+import { requireWorkspaceType } from '../middleware/requireWorkspaceType';
+import { requirePlanFeature } from '../middleware/requirePlanFeature';
 import { WhatsAppController } from '../controllers/WhatsAppController';
 import rateLimit from 'express-rate-limit';
 
@@ -24,6 +26,8 @@ const campaignLimiter = rateLimit({
 });
 
 router.use(requireAuth);
+router.use(requireWorkspaceType('PJ'));
+router.use(requirePlanFeature('whatsapp'));
 
 // Config
 router.get('/config', ctrl.getConfig.bind(ctrl));

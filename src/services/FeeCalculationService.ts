@@ -82,7 +82,7 @@ export class FeeCalculationService {
 
     const valorPercentual = (valorTotalBruto * Number(feeConfig.taxaPercentual)) / 100;
     const valorFixo = Number(feeConfig.taxaFixa) || 0;
-    const valorTaxasGateway = Math.max(0, valorPercentual + valorFixo);
+    const valorTaxasGateway = Math.round(Math.max(0, valorPercentual + valorFixo) * 100) / 100;
 
     return { valorTaxasGateway, valorPercentual, valorFixo };
   }
@@ -127,6 +127,6 @@ export class FeeCalculationService {
     valorDesconto: number,
     valorTaxasGateway: number
   ): number {
-    return Math.max(0, valorTotalBruto - valorDesconto - valorTaxasGateway);
+    return Math.round(Math.max(0, valorTotalBruto - valorDesconto - valorTaxasGateway) * 100) / 100;
   }
 }

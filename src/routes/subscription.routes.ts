@@ -11,6 +11,7 @@ router.use(autoAudit());
 router.get('/all', SubscriptionController.listAll);
 router.get('/me', SubscriptionController.getMySubscription);
 router.post('/plan', SubscriptionController.updatePlan);
+router.post('/change-request', SubscriptionController.requestPlanChange);
 router.put('/:id/toggle-block', SubscriptionController.toggleBlock);
 
 export default router;

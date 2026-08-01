@@ -213,6 +213,7 @@ ATENÇÃO: É EXTREMAMENTE CRÍTICO QUE VOCÊ EXTRAIA TODAS AS LINHAS E TODOS OS
               valorSinal: sinalRecebido,
               formaPagamento: formaPgto,
               status: statusVenda,
+              finalizedAt: statusVenda === 'FINALIZADA' ? new Date() : null,
               cmvTotal,
               observacoes: 'Importado via IA'
             }

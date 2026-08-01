@@ -4,6 +4,7 @@ import { InternalTeamController } from '../controllers/InternalTeamController';
 import { PlanController } from '../controllers/PlanController';
 import { requireAuth } from '../middleware/auth';
 import { requireInternalPermission } from '../middleware/requireInternalPermission';
+import { requireDestructiveConfirmation } from '../middleware/requireDestructiveConfirmation';
 
 const router = Router();
 const superAdminController = new SuperAdminController();
@@ -39,11 +40,13 @@ router.get('/dashboard', superAdminController.getDashboard.bind(superAdminContro
 
 // Módulo Clientes
 router.get('/clients', requireInternalPermission('CLIENTES', 'VIEW'), superAdminController.getAllClients.bind(superAdminController));
+router.get('/clients/:id', requireInternalPermission('CLIENTES', 'VIEW'), superAdminController.getClientById.bind(superAdminController));
 router.post('/clients', requireInternalPermission('CLIENTES', 'FULL'), superAdminController.createClient.bind(superAdminController));
 router.put('/clients/:id', requireInternalPermission('CLIENTES', 'FULL'), superAdminController.updateClient.bind(superAdminController));
 router.delete('/clients/:id', requireInternalPermission('CLIENTES', 'FULL'), superAdminController.deleteClient.bind(superAdminController));
 router.get('/clients/:id/users', requireInternalPermission('CLIENTES', 'VIEW'), superAdminController.getClientUsers.bind(superAdminController));
 router.get('/clients/:clientId/usage', requireInternalPermission('CLIENTES', 'VIEW'), superAdminController.getUsageMetrics.bind(superAdminController));
+router.post('/clients/:clientId/add-pf-control', requireInternalPermission('CLIENTES', 'FULL'), superAdminController.addPfControl.bind(superAdminController));
 
 // Módulo Configurações (White-label, Backup, Manutenção, API Keys)
 router.get('/settings', requireInternalPermission('CONFIGURACOES', 'VIEW'), superAdminController.getSystemSettings.bind(superAdminController));
@@ -88,6 +91,7 @@ router.get('/financial-reports', requireInternalPermission('FINANCEIRO', 'VIEW')
 
 // Módulo Inadimplentes
 router.get('/overdue', requireInternalPermission('FINANCEIRO', 'VIEW'), superAdminController.listOverdue.bind(superAdminController));
+router.post('/trigger-billing', requireInternalPermission('FINANCEIRO', 'FULL'), superAdminController.triggerBilling.bind(superAdminController));
 
 // Módulo Assinaturas e Faturas
 router.get('/subscriptions/:clientId/invoices', requireInternalPermission('CLIENTES', 'VIEW'), superAdminController.getClientInvoices.bind(superAdminController));
@@ -95,6 +99,10 @@ router.put('/subscriptions/:id/cancel', requireInternalPermission('FINANCEIRO', 
 router.put('/subscriptions/:id/plan', requireInternalPermission('FINANCEIRO', 'FULL'), superAdminController.changeSubscriptionPlan.bind(superAdminController));
 router.post('/subscriptions/:id/invoices', requireInternalPermission('FINANCEIRO', 'FULL'), superAdminController.generateInvoice.bind(superAdminController));
 router.put('/invoices/:id/pay', requireInternalPermission('FINANCEIRO', 'FULL'), superAdminController.payInvoice.bind(superAdminController));
+
+// Módulo Features por Loja
+router.get('/stores/:id/features', requireInternalPermission('CLIENTES', 'VIEW'), superAdminController.updateStoreFeatures.bind(superAdminController));
+router.put('/stores/:id/features', requireInternalPermission('CLIENTES', 'FULL'), superAdminController.updateStoreFeatures.bind(superAdminController));
 
 // Módulo Planos
 router.get('/plans', requireInternalPermission('PLANOS_E_MODULOS', 'VIEW'), planController.list.bind(planController));
@@ -110,8 +118,10 @@ router.get('/audit-logs', requireInternalPermission('AUDITORIA', 'VIEW'), superA
 
 // Módulo Usuários e Senhas
 router.get('/users/all', requireInternalPermission('CLIENTES', 'VIEW'), superAdminController.listAllUsers.bind(superAdminController));
+router.put('/users/:id', requireInternalPermission('CLIENTES', 'FULL'), superAdminController.updateUser.bind(superAdminController));
 router.put('/users/:id/reset-password', requireInternalPermission('CLIENTES', 'FULL'), superAdminController.resetUserPassword.bind(superAdminController));
-router.post('/users/reset-all-passwords', requireInternalPermission('CLIENTES', 'FULL'), superAdminController.resetAllUserPasswords.bind(superAdminController));
+router.post('/users/reset-all-passwords', requireInternalPermission('CLIENTES', 'FULL'), requireDestructiveConfirmation, superAdminController.resetAllUserPasswords.bind(superAdminController));
+router.delete('/users/:id', requireInternalPermission('CLIENTES', 'FULL'), superAdminController.deleteUser.bind(superAdminController));
 
 // Módulo Aprovação de Cadastros
 router.get('/pending-registrations', requireInternalPermission('CLIENTES', 'VIEW'), superAdminController.listPendingRegistrations.bind(superAdminController));
@@ -119,7 +129,7 @@ router.post('/pending-registrations/:id/approve', requireInternalPermission('CLI
 router.post('/pending-registrations/:id/reject', requireInternalPermission('CLIENTES', 'FULL'), superAdminController.rejectRegistration.bind(superAdminController));
 
 // Módulo Reset de Banco
-router.post('/reset-database', requireInternalPermission('CONFIGURACOES', 'FULL'), superAdminController.resetDatabase.bind(superAdminController));
+router.post('/reset-database', requireInternalPermission('CONFIGURACOES', 'FULL'), requireDestructiveConfirmation, superAdminController.resetDatabase.bind(superAdminController));
 
 // Módulo Acesso e Liberações (Impersonation)
 router.post('/impersonate/:storeId', requireInternalPermission('ACESSO_E_LIBERACOES', 'FULL'), superAdminController.impersonate.bind(superAdminController));

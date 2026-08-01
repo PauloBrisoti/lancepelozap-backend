@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { FinanceController } from '../controllers/FinanceController';
 import { DreController } from '../controllers/DreController';
 import { requireAuth } from '../middleware/auth';
+import { requireWorkspaceType } from '../middleware/requireWorkspaceType';
 import { requirePlanFeature } from '../middleware/requirePlanFeature';
 
 import multer from 'multer';
@@ -55,10 +56,15 @@ const router = Router();
 
 router.use(requireAuth);
 
+router.get('/dashboard', requireWorkspaceType('PJ', 'PF'), FinanceController.getDashboard);
+
+router.use(requireWorkspaceType('PJ'));
+
+router.get('/categories', FinanceController.listCategories);
+router.post('/categories', FinanceController.createCategory);
+
 router.get('/dre', requirePlanFeature('financeiro'), DreController.getDre);
 router.get('/dre/export', requirePlanFeature('financeiro'), DreController.exportDre);
-
-router.get('/dashboard', FinanceController.getDashboard);
 router.get('/transactions', FinanceController.getTransactions);
 router.post('/transactions', requirePlanFeature('financeiro'), upload.single('comprovante'), FinanceController.addTransaction);
 router.put('/transactions/:id', requirePlanFeature('financeiro'), FinanceController.updateTransaction);
@@ -71,6 +77,6 @@ router.post('/payables', requirePlanFeature('financeiro'), FinanceController.cre
 router.put('/payables/:id', requirePlanFeature('financeiro'), FinanceController.updatePayable);
 router.post('/payables/:id/pay', requirePlanFeature('financeiro'), FinanceController.payPayable);
 
-router.post('/bulk', requirePlanFeature('financeiro'), FinanceController.bulkAction);
+router.post('/bulk', FinanceController.bulkAction);
 
 export default router;

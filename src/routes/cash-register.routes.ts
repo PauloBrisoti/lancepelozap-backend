@@ -1,7 +1,9 @@
 import { Router } from 'express';
 import { CashRegisterController } from '../controllers/CashRegisterController';
 import { requireAuth } from '../middleware/auth';
+import { requireWorkspaceType } from '../middleware/requireWorkspaceType';
 import { requireStorePermission } from '../middleware/requireStorePermission';
+import { requirePlanFeature } from '../middleware/requirePlanFeature';
 import { autoAudit } from '../middleware/autoAudit';
 import { z } from 'zod';
 import { validate } from '../lib/validation';
@@ -24,6 +26,8 @@ const transactionSchema = z.object({
 });
 
 router.use(requireAuth);
+router.use(requireWorkspaceType('PJ'));
+router.use(requirePlanFeature('caixa'));
 router.use(autoAudit());
 
 router.post('/open',

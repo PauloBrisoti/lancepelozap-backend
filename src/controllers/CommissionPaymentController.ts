@@ -1,5 +1,7 @@
 import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
+import { toZonedTime, fromZonedTime } from 'date-fns-tz';
+import { getTimezone, buildDateRange } from '../lib/dateUtils';
 
 export class CommissionPaymentController {
   async summary(req: Request, res: Response) {
@@ -40,9 +42,7 @@ export class CommissionPaymentController {
       }));
 
       // Total paid this month
-      const startOfMonth = new Date();
-      startOfMonth.setDate(1);
-      startOfMonth.setHours(0, 0, 0, 0);
+      const { firstDay: startOfMonth } = buildDateRange();
 
       const paidThisMonth = await prisma.commissionPayment.aggregate({
         where: { storeId, pagoEm: { gte: startOfMonth } },
@@ -104,8 +104,9 @@ export class CommissionPaymentController {
       const { sellerId, dataFim } = req.body;
       if (!sellerId) return res.status(400).json({ message: 'sellerId é obrigatório' });
 
-      const endDate = dataFim ? new Date(dataFim) : new Date();
-      endDate.setHours(23, 59, 59, 999);
+      const endDate = dataFim
+        ? fromZonedTime(`${dataFim}T23:59:59.999`, getTimezone())
+        : toZonedTime(new Date(), getTimezone());
 
       // Find all unpaid commission items for this seller up to dataFim
       const items = await prisma.saleItem.findMany({

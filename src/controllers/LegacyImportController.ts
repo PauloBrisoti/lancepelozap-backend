@@ -495,6 +495,7 @@ export class LegacyImportController {
             valorSinal: sinalRecebido,
             formaPagamento: formaPgto,
             status: status,
+            finalizedAt: status === 'FINALIZADA' ? new Date() : null,
             observacoes: observacoesExtra
           }
         });

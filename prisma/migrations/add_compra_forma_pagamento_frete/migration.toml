@@ -1,0 +1,6 @@
+[migration]
+checksum = ""
+checksums = {}
+id = "add_compra_forma_pagamento_frete"
+started_at = "2026-07-31T00:00:00.000000+00:00"
+applied_steps_count = 0

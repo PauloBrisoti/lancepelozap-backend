@@ -22,6 +22,31 @@ export class ProductController {
         orderBy: { nome: 'asc' }
       });
 
+      const encomendaIds = products.filter(p => p.status === 'ENCOMENDA').map(p => p.id);
+      if (encomendaIds.length > 0) {
+        const encomendaData = await prisma.purchaseOrderItem.findMany({
+          where: {
+            productId: { in: encomendaIds },
+            order: { customerId: { not: null } }
+          },
+          select: {
+            productId: true,
+            order: { select: { customer: { select: { nomeCompleto: true } } } }
+          },
+          distinct: ['productId'],
+          orderBy: { id: 'desc' },
+        });
+        const customerMap = new Map<string, string>();
+        for (const item of encomendaData) {
+          if (!customerMap.has(item.productId) && item.order.customer) {
+            customerMap.set(item.productId, item.order.customer.nomeCompleto);
+          }
+        }
+        for (const p of products) {
+          (p as any).clienteNome = customerMap.get(p.id) || null;
+        }
+      }
+
       res.json(products);
     } catch (error) {
       console.error("Erro ao listar produtos:", error);

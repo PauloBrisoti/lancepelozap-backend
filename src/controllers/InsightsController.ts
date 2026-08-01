@@ -1,6 +1,8 @@
 import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
-import { subDays, format, startOfDay, endOfDay, differenceInDays } from 'date-fns';
+import { subDays, format, startOfDay, endOfDay } from 'date-fns';
+import { toZonedTime } from 'date-fns-tz';
+import { getTimezone } from '../lib/dateUtils';
 
 export class InsightsController {
   static async getForecast(req: Request, res: Response) {
@@ -8,7 +10,7 @@ export class InsightsController {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ message: 'Não autorizado' });
 
-      const hoje = new Date();
+      const hoje = toZonedTime(new Date(), getTimezone());
       const daysBack = 90;
       const startDate = subDays(hoje, daysBack);
 
@@ -21,6 +23,22 @@ export class InsightsController {
         select: { dataVenda: true, valorTotalLiquido: true },
         orderBy: { dataVenda: 'asc' }
       });
+
+      if (sales.length < 7) {
+        const diasFaltando = 7 - sales.length;
+        return res.json({
+          daily: sales.map(s => ({ date: format(s.dataVenda, 'yyyy-MM-dd'), total: Number(s.valorTotalLiquido) })),
+          movingAvg: [],
+          forecast: [],
+          totalLast30Days: sales.reduce((s, sale) => s + Number(sale.valorTotalLiquido), 0),
+          avgTicket: sales.length > 0
+            ? Math.round(sales.reduce((s, sale) => s + Number(sale.valorTotalLiquido), 0) / sales.length * 100) / 100
+            : 0,
+          dadosInsuficientes: true,
+          mensagem: `Sua loja ainda precisa de mais ${diasFaltando} dia${diasFaltando !== 1 ? 's' : ''} de movimentação para gerarmos uma previsão confiável. Continue vendendo e volte em alguns dias.`,
+          diasComVenda: sales.length,
+        });
+      }
 
       const dailyMap = new Map<string, number>();
       for (let i = daysBack; i >= 0; i--) {
@@ -55,6 +73,7 @@ export class InsightsController {
         avgTicket: sales.length > 0
           ? Math.round(sales.reduce((s, sale) => s + Number(sale.valorTotalLiquido), 0) / sales.length * 100) / 100
           : 0,
+        dadosInsuficientes: false,
       });
     } catch (error) {
       console.error('Erro no forecast:', error);
@@ -67,7 +86,7 @@ export class InsightsController {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ message: 'Não autorizado' });
 
-      const hoje = new Date();
+      const hoje = toZonedTime(new Date(), getTimezone());
       const startDate = subDays(hoje, 30);
 
       const products = await prisma.product.findMany({
@@ -124,7 +143,7 @@ export class InsightsController {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ message: 'Não autorizado' });
 
-      const hoje = new Date();
+      const hoje = toZonedTime(new Date(), getTimezone());
       const last30 = subDays(hoje, 30);
       const last60 = subDays(hoje, 60);
 

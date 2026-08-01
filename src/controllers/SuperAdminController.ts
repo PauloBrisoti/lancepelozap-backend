@@ -5,6 +5,8 @@ import jwt from 'jsonwebtoken';
 import fs from 'fs';
 import path from 'path';
 import { exec } from 'child_process';
+import { toZonedTime, fromZonedTime } from 'date-fns-tz';
+import { getTimezone } from '../lib/dateUtils';
 
 export class SuperAdminController {
 
@@ -114,6 +116,45 @@ export class SuperAdminController {
     }
   }
 
+  async getClientById(req: Request, res: Response) {
+    try {
+      const id = req.params.id as string;
+      const client = await prisma.client.findUnique({
+        where: { id },
+        include: {
+          subscriptions: true,
+          clientUsers: {
+            include: { user: { select: { id: true, nome: true, email: true, ativo: true } } }
+          },
+          controls: {
+            include: { stores: true }
+          }
+        }
+      });
+
+      if (!client) return res.status(404).json({ error: "Cliente não encontrado" });
+
+      const formatted = {
+        id: client.id,
+        nomeCompleto: client.nomeCompleto,
+        nomeFantasia: client.nomeCompleto,
+        cnpjCpf: client.cnpjCpf,
+        telefoneWhatsapp: client.telefoneWhatsapp,
+        emailContato: client.email,
+        status: client.status,
+        createdAt: client.createdAt,
+        subscriptions: client.subscriptions,
+        users: client.clientUsers.map(cu => cu.user),
+        controls: client.controls
+      };
+
+      return res.json(formatted);
+    } catch (error) {
+      console.error("Erro ao buscar cliente:", error);
+      return res.status(500).json({ error: "Erro ao buscar dados do cliente" });
+    }
+  }
+
   // Cria um novo Cliente manualmente (que por tabela cria Control, Store e User)
   async createClient(req: Request, res: Response) {
     try {
@@ -126,14 +167,13 @@ export class SuperAdminController {
         telefoneWhatsapp, 
         emailContato, 
         chavePix,
-        // Dados do Admin
         nomeResponsavel,
         emailResponsavel,
         senhaResponsavel,
-        // Dados da assinatura
         plano,
         statusPagamento,
-        // Endereço
+        planId: _planId,
+        workspaceType,
         cep,
         logradouro,
         numero,
@@ -142,6 +182,8 @@ export class SuperAdminController {
         cidade,
         uf
       } = req.body;
+
+      const planId = req.body.planoId || _planId;
 
       if (!nomeFantasia || !emailResponsavel || !senhaResponsavel) {
         return res.status(400).json({ error: 'Campos obrigatórios: Nome da Loja, Email do Responsável e Senha Inicial' });
@@ -153,9 +195,9 @@ export class SuperAdminController {
       }
 
       const hashedPassword = await bcrypt.hash(senhaResponsavel, 10);
+      const tipo = workspaceType || 'PJ';
 
       const transactionResult = await prisma.$transaction(async (tx) => {
-        // 1. Criar Client
         const newClient = await tx.client.create({
           data: {
             nomeCompleto: nomeFantasia,
@@ -173,16 +215,14 @@ export class SuperAdminController {
           }
         });
 
-        // 2. Criar Control (módulo de sistema, ex: VAREJO)
         const newControl = await tx.control.create({
           data: {
             clientId: newClient.id,
             nome: 'Varejo e Estoque',
-            tipo: 'PJ'
+            tipo
           }
         });
 
-        // 3. Criar Store
         const newStore = await tx.store.create({
           data: {
             controlId: newControl.id,
@@ -192,11 +232,11 @@ export class SuperAdminController {
             telefoneWhatsapp,
             emailContato,
             chavePix,
-            status: 'ATIVO'
+            status: 'ATIVO',
+            tipoWorkspace: tipo
           }
         });
 
-        // 4. Criar User Global
         const newUser = await tx.user.create({
           data: {
             email: emailResponsavel,
@@ -206,7 +246,6 @@ export class SuperAdminController {
           }
         });
 
-        // 5. Associar ClientUser (Owner)
         await tx.clientUser.create({
           data: {
             clientId: newClient.id,
@@ -215,7 +254,6 @@ export class SuperAdminController {
           }
         });
 
-        // 6. Associar StoreUserAccess (Admin da Loja)
         await tx.storeUserAccess.create({
           data: {
             storeId: newStore.id,
@@ -224,23 +262,26 @@ export class SuperAdminController {
           }
         });
 
-        // 7. Obter ou criar um Plano base
-        let defaultPlan = await tx.plan.findFirst();
-        if (!defaultPlan) {
-          defaultPlan = await tx.plan.create({
+        let selectedPlan = planId
+          ? await tx.plan.findUnique({ where: { id: planId } })
+          : null;
+        if (!selectedPlan) {
+          selectedPlan = await tx.plan.findFirst({ orderBy: { precoMensal: 'asc' } });
+        }
+        if (!selectedPlan) {
+          selectedPlan = await tx.plan.create({
             data: { nome: plano || 'Starter', precoMensal: 49, maxControls: 1, maxStores: 1 }
           });
         }
 
-        // 8. Criar Assinatura
         const validade = new Date();
         validade.setMonth(validade.getMonth() + 1);
 
         const newSubscription = await tx.subscription.create({
           data: {
             clientId: newClient.id,
-            planId: defaultPlan.id,
-            valorMensalidade: plano === 'PRO' ? 199 : plano === 'ENTERPRISE' ? 499 : 49,
+            planId: selectedPlan.id,
+            valorMensalidade: Number(selectedPlan.precoMensal),
             dataVencimento: validade,
             statusPagamento: statusPagamento || 'PAGO'
           }
@@ -248,6 +289,15 @@ export class SuperAdminController {
 
         return { newClient, newStore, newUser, newSubscription };
       });
+
+      // Enviar e-mail de boas-vindas com dados de acesso
+      try {
+        const { sendAccountApproved } = await import('../services/email.service');
+        const { newClient, newUser } = transactionResult;
+        await sendAccountApproved(newClient.email, newUser.nome, newUser.email);
+      } catch (err) {
+        console.error('Erro ao enviar email de boas-vindas (createClient):', err);
+      }
 
       return res.status(201).json(transactionResult);
     } catch (error: any) {
@@ -259,29 +309,94 @@ export class SuperAdminController {
   // Atualiza um Cliente
   async updateClient(req: Request, res: Response) {
     try {
-      // RBAC já validado na rota
-
       const id = req.params.id as string;
-      const { nomeFantasia, cnpjCpf, nichoPrincipal, telefoneWhatsapp, emailContato, chavePix, status, cep, logradouro, numero, complemento, bairro, cidade, uf } = req.body;
+      const { nomeFantasia, cnpjCpf, nichoPrincipal, telefoneWhatsapp, emailContato, chavePix, status, cep, logradouro, numero, complemento, bairro, cidade, uf, planId: _planId, statusPagamento, dataVencimento, workspaceType } = req.body;
+      const planId = req.body.planoId || _planId;
 
-      // Updating client basic info. If you want to update Store as well, you'd need the storeId.
+      const updateData: Record<string, any> = {};
+      if (nomeFantasia) updateData.nomeCompleto = nomeFantasia;
+      if (cnpjCpf) updateData.cnpjCpf = cnpjCpf;
+      if (telefoneWhatsapp) updateData.telefoneWhatsapp = telefoneWhatsapp;
+      if (emailContato) updateData.email = emailContato;
+      if (status) updateData.status = status;
+      if (cep) updateData.cep = cep;
+      if (logradouro) updateData.logradouro = logradouro;
+      if (numero) updateData.numero = numero;
+      if (complemento) updateData.complemento = complemento;
+      if (bairro) updateData.bairro = bairro;
+      if (cidade) updateData.cidade = cidade;
+      if (uf) updateData.uf = uf;
+
       const updatedClient = await prisma.client.update({
         where: { id },
-        data: {
-          nomeCompleto: nomeFantasia,
-          cnpjCpf,
-          telefoneWhatsapp,
-          email: emailContato,
-          status,
-          cep,
-          logradouro,
-          numero,
-          complemento,
-          bairro,
-          cidade,
-          uf
-        }
+        data: updateData
       });
+
+      if (planId || statusPagamento || dataVencimento) {
+        const latestSub = await prisma.subscription.findFirst({
+          where: { clientId: id },
+          orderBy: { createdAt: 'desc' }
+        });
+
+        if (latestSub) {
+          const updateData: any = {};
+          if (planId) {
+            const plan = await prisma.plan.findUnique({ where: { id: planId } });
+            if (!plan) return res.status(404).json({ error: 'Plano não encontrado' });
+            updateData.planId = planId;
+            updateData.valorMensalidade = plan.precoMensal;
+          }
+          if (statusPagamento) {
+            updateData.statusPagamento = statusPagamento;
+          }
+          if (dataVencimento) {
+            updateData.dataVencimento = new Date(dataVencimento);
+          }
+
+          await prisma.subscription.update({
+            where: { id: latestSub.id },
+            data: updateData
+          });
+        }
+      }
+
+      // Auto-marca como INADIMPLENTE se a data de vencimento está no passado
+      // (a menos que o admin tenha explicitamente definido como PAGO)
+      if (statusPagamento !== 'PAGO') {
+        const sub = await prisma.subscription.findFirst({
+          where: { clientId: id },
+          orderBy: { createdAt: 'desc' }
+        });
+        if (sub) {
+          const hoje = new Date();
+          hoje.setHours(0, 0, 0, 0);
+          const venc = new Date(sub.dataVencimento);
+          venc.setHours(0, 0, 0, 0);
+          if (venc < hoje && sub.statusPagamento !== 'PAGO' && sub.statusPagamento !== 'INADIMPLENTE') {
+            await prisma.subscription.update({
+              where: { id: sub.id },
+              data: { statusPagamento: 'INADIMPLENTE' }
+            });
+          }
+        }
+      }
+
+      if (workspaceType && ['PF', 'PJ'].includes(workspaceType)) {
+        await prisma.control.updateMany({
+          where: { clientId: id },
+          data: { tipo: workspaceType }
+        });
+
+        const clientControls = await prisma.control.findMany({
+          where: { clientId: id },
+          select: { id: true }
+        });
+
+        await prisma.store.updateMany({
+          where: { controlId: { in: clientControls.map(c => c.id) } },
+          data: { tipoWorkspace: workspaceType }
+        });
+      }
 
       return res.json(updatedClient);
     } catch (error) {
@@ -549,11 +664,12 @@ export class SuperAdminController {
         data: { status: 'ATIVO' },
       });
 
-      // Enviar email de aprovação
+      // Enviar email de aprovação com e-mail de acesso
       try {
         const { sendAccountApproved } = await import('../services/email.service');
         const userName = client.clientUsers[0]?.user?.nome || client.nomeCompleto;
-        await sendAccountApproved(client.email, userName);
+        const userEmail = client.clientUsers[0]?.user?.email || client.email;
+        await sendAccountApproved(client.email, userName, userEmail);
       } catch (err) {
         console.error('Erro ao enviar email de aprovação:', err);
       }
@@ -622,14 +738,18 @@ export class SuperAdminController {
 
   async getFinancialReports(req: Request, res: Response) {
     try {
-      const hoje = new Date();
+      const hoje = toZonedTime(new Date(), getTimezone());
       const meses: { label: string; inicio: Date; fim: Date }[] = [];
 
       for (let i = 11; i >= 0; i--) {
-        const d = new Date(hoje.getFullYear(), hoje.getMonth() - i, 1);
-        const f = new Date(hoje.getFullYear(), hoje.getMonth() - i + 1, 0, 23, 59, 59, 999);
+        const dt = new Date(hoje.getFullYear(), hoje.getMonth() - i, 1);
+        const ano = dt.getFullYear();
+        const mes = dt.getMonth() + 1;
+        const inicioStr = `${ano}-${String(mes).padStart(2, '0')}-01T00:00:00.000`;
+        const ultimoDia = new Date(ano, mes, 0).getDate();
+        const fimStr = `${ano}-${String(mes).padStart(2, '0')}-${String(ultimoDia).padStart(2, '0')}T23:59:59.999`;
         const mesesPt = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
-        meses.push({ label: `${mesesPt[d.getMonth()]}/${String(d.getFullYear()).slice(2)}`, inicio: d, fim: f });
+        meses.push({ label: `${mesesPt[dt.getMonth()]}/${String(ano).slice(2)}`, inicio: fromZonedTime(inicioStr, getTimezone()), fim: fromZonedTime(fimStr, getTimezone()) });
       }
 
       const receitaMensal: { mes: string; receita: number; novosClientes: number; churn: number }[] = [];
@@ -796,8 +916,8 @@ export class SuperAdminController {
       const userId = req.params.id as string;
       const { novaSenha } = req.body;
 
-      if (!novaSenha || novaSenha.length < 8) {
-        return res.status(400).json({ error: 'Nova senha deve ter no mínimo 8 caracteres' });
+      if (!novaSenha || novaSenha.length < 6) {
+        return res.status(400).json({ error: 'Nova senha deve ter no mínimo 6 caracteres' });
       }
 
       const user = await prisma.user.findUnique({ where: { id: userId } });
@@ -835,6 +955,57 @@ export class SuperAdminController {
       });
     } catch (error) {
       return res.status(500).json({ error: 'Erro ao redefinir senhas' });
+    }
+  }
+
+  async updateUser(req: Request, res: Response) {
+    try {
+      const userId = req.params.id as string;
+      const { nome, email, role, ativo } = req.body;
+
+      const user = await prisma.user.findUnique({ where: { id: userId } });
+      if (!user) return res.status(404).json({ error: 'Usuário não encontrado' });
+
+      const data: any = {};
+      if (nome !== undefined) data.nome = nome;
+      if (email !== undefined) {
+        const existing = await prisma.user.findUnique({ where: { email } });
+        if (existing && existing.id !== userId) {
+          return res.status(400).json({ error: 'Este email já está em uso por outro usuário' });
+        }
+        data.email = email;
+      }
+      if (role !== undefined) data.role = role;
+      if (ativo !== undefined) data.ativo = ativo;
+
+      await prisma.user.update({
+        where: { id: userId },
+        data,
+      });
+
+      return res.json({ message: 'Usuário atualizado com sucesso' });
+    } catch (error) {
+      console.error('Erro ao atualizar usuário:', error);
+      return res.status(500).json({ error: 'Erro ao atualizar usuário' });
+    }
+  }
+
+  async deleteUser(req: Request, res: Response) {
+    try {
+      const userId = req.params.id as string;
+
+      const user = await prisma.user.findUnique({ where: { id: userId } });
+      if (!user) return res.status(404).json({ error: 'Usuário não encontrado' });
+
+      if (user.role === 'SUPER_ADMIN') {
+        return res.status(400).json({ error: 'Não é possível excluir um Super Admin' });
+      }
+
+      await prisma.user.delete({ where: { id: userId } });
+
+      return res.json({ message: `Usuário ${user.nome} excluído com sucesso` });
+    } catch (error) {
+      return res.status(500).json({ error: 'Erro ao excluir usuário' });
     }
   }
 
@@ -923,6 +1094,21 @@ export class SuperAdminController {
           ...(dataVencimento && { dataVencimento: new Date(dataVencimento) }),
         },
       });
+
+      // Auto-marca como INADIMPLENTE se a nova data está no passado
+      if (updated.statusPagamento !== 'PAGO') {
+        const hoje = new Date();
+        hoje.setHours(0, 0, 0, 0);
+        const venc = new Date(updated.dataVencimento);
+        venc.setHours(0, 0, 0, 0);
+        if (venc < hoje && updated.statusPagamento !== 'INADIMPLENTE') {
+          await prisma.subscription.update({
+            where: { id: updated.id },
+            data: { statusPagamento: 'INADIMPLENTE' }
+          });
+          updated.statusPagamento = 'INADIMPLENTE';
+        }
+      }
 
       return res.json(updated);
     } catch (error) {
@@ -1316,25 +1502,39 @@ export class SuperAdminController {
   // Entra no painel da loja selecionada (Impersonate)
   async impersonate(req: Request, res: Response) {
     try {
-      // RBAC já validado na rota
-
       const storeId = req.params.storeId as string;
       const store = await prisma.store.findUnique({ where: { id: storeId } });
       if (!store) return res.status(404).json({ error: 'Loja não encontrada' });
 
-      // Find the associated Client to get clientId
       const control = await prisma.control.findUnique({ where: { id: store.controlId } });
 
+      const storeAdmin = await prisma.storeUserAccess.findFirst({
+        where: { storeId, role: 'ADMIN_LOJA' },
+        include: { user: { select: { role: true } } }
+      });
+
+      const targetRole = storeAdmin?.user?.role || 'USER';
+
+
+      const storeOwner = await prisma.storeUserAccess.findFirst({
+        where: { storeId },
+        orderBy: { createdAt: "asc" },
+        select: { userId: true }
+      });
+      const targetUserId = storeOwner?.userId || null;
       const JWT_SECRET = process.env.JWT_SECRET;
       if (!JWT_SECRET) return res.status(500).json({ error: 'JWT_SECRET ausente' });
 
       const token = jwt.sign(
-        { 
-          id: req.user.id, 
+        {
+          id: req.user.id,
           storeId: storeId,
+          allowedStoreIds: [storeId],
           clientId: control?.clientId || null,
-          role: 'SUPER_ADMIN', 
+          role: targetRole,
           isImpersonating: true,
+          impersonatorId: req.user.id,
+          targetUserId: targetUserId,
           originalUserId: req.user.id,
           originalStoreId: req.user.storeId || null,
           originalClientId: req.user.clientId || null
@@ -1343,8 +1543,11 @@ export class SuperAdminController {
         { expiresIn: "1d" }
       );
 
+      res.clearCookie('adminToken', { path: '/' });
+
       res.cookie("authToken", token, {
         httpOnly: true,
+        path: '/',
         sameSite: "lax",
         secure: process.env.NODE_ENV === "production",
         maxAge: 24 * 60 * 60 * 1000,
@@ -1391,8 +1594,12 @@ export class SuperAdminController {
         { expiresIn: "7d" }
       );
 
-      res.cookie("authToken", token, {
+      res.clearCookie('authToken', { path: '/' });
+
+      const cookieName = originalUser.role === 'SUPER_ADMIN' ? 'adminToken' : 'authToken';
+      res.cookie(cookieName, token, {
         httpOnly: true,
+        path: '/',
         sameSite: "lax",
         secure: process.env.NODE_ENV === "production",
         maxAge: 7 * 24 * 60 * 60 * 1000,
@@ -1405,4 +1612,133 @@ export class SuperAdminController {
     }
   }
 
+  // ==========================================
+  // ADD-ON PF: Criar Control PF para cliente PJ
+  // ==========================================
+  async addPfControl(req: Request, res: Response) {
+    try {
+      const clientId = req.params.clientId as string;
+
+      const client = await prisma.client.findUnique({
+        where: { id: clientId },
+        include: {
+          controls: {
+            where: { tipo: 'PF' },
+            select: { id: true }
+          }
+        }
+      });
+
+      if (!client) {
+        return res.status(404).json({ error: 'Cliente não encontrado' });
+      }
+
+      if (client.controls.length > 0) {
+        return res.status(409).json({ error: 'Cliente já possui um controle PF. Limite de 1 por cliente.' });
+      }
+
+      const result = await prisma.$transaction(async (tx) => {
+        const control = await tx.control.create({
+          data: {
+            clientId,
+            nome: `${client.nomeCompleto} - Finanças Pessoais`,
+            tipo: 'PF',
+            status: 'ATIVO'
+          }
+        });
+
+        const store = await tx.store.create({
+          data: {
+            controlId: control.id,
+            nomeFantasia: `${client.nomeCompleto} - PF`,
+            tipoWorkspace: 'PF',
+            status: 'ATIVO',
+            cnpjCpf: client.cnpjCpf,
+            emailContato: client.email,
+            telefoneWhatsapp: client.telefoneWhatsapp
+          }
+        });
+
+        await tx.wallet.create({
+          data: {
+            storeId: store.id,
+            nome: 'Carteira PF',
+            tipo: 'PESSOAL',
+            saldoAtual: 0
+          }
+        });
+
+        return { control, store };
+      });
+
+      return res.status(201).json({
+        message: 'Controle PF criado com sucesso',
+        control: { id: result.control.id, nome: result.control.nome, tipo: result.control.tipo },
+        store: { id: result.store.id, nome: result.store.nomeFantasia }
+      });
+    } catch (error: any) {
+      console.error('Erro ao criar controle PF:', error.message, error.stack);
+      return res.status(500).json({ error: 'Erro ao criar controle PF' });
+    }
+  }
+
+  async updateStoreFeatures(req: Request, res: Response) {
+    try {
+      const storeId = req.params.id as string;
+
+      const store = await prisma.store.findUnique({ where: { id: storeId } });
+      if (!store) return res.status(404).json({ error: 'Loja não encontrada' });
+
+      if (req.method === 'GET') {
+        const features = store.features ? JSON.parse(store.features) : {};
+        return res.json({ features });
+      }
+
+      const { features } = req.body;
+
+      const updated = await prisma.store.update({
+        where: { id: storeId },
+        data: { features: features ? JSON.stringify(features) : null },
+      });
+
+      return res.json({ message: 'Features atualizadas', features: features || {} });
+    } catch (error) {
+      console.error('Erro ao atualizar features da loja:', error);
+      return res.status(500).json({ error: 'Erro interno' });
+    }
+  }
+
+  async triggerBilling(req: Request, res: Response) {
+    try {
+      const hoje = new Date();
+
+      const vencidas = await prisma.subscription.findMany({
+        where: {
+          dataVencimento: { lt: hoje },
+          statusPagamento: { notIn: ['PAGO', 'CANCELADO'] },
+        },
+        include: { client: { select: { nomeCompleto: true } } },
+      });
+
+      let atualizadas = 0;
+      for (const sub of vencidas) {
+        if (sub.statusPagamento !== 'VENCIDO') {
+          await prisma.subscription.update({
+            where: { id: sub.id },
+            data: { statusPagamento: 'VENCIDO' },
+          });
+          atualizadas++;
+        }
+      }
+
+      return res.json({
+        message: `Varredura concluída. ${vencidas.length} assinatura(s) vencida(s) encontrada(s), ${atualizadas} atualizada(s) para VENCIDO.`,
+        total: vencidas.length,
+        atualizadas,
+      });
+    } catch (error) {
+      console.error('Erro na varredura financeira:', error);
+      return res.status(500).json({ error: 'Erro ao executar varredura financeira' });
+    }
+  }
 }

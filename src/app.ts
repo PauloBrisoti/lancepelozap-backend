@@ -3,11 +3,14 @@ import helmet from "helmet";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import { randomUUID } from "crypto";
+import jwt from "jsonwebtoken";
 import { logger } from "./lib/logger";
+import { verifyJwt } from "./lib/jwt";
 import { metrics } from "./lib/metrics";
 import { requestIdMiddleware, getRequestId } from "./middleware/requestId";
 import { csrfProtection } from "./middleware/csrf";
 import { sanitizeInput } from "./middleware/sanitize";
+import { prisma } from "./lib/prisma";
 import { authRouter } from "./routes/auth";
 import { customerRouter } from "./routes/customer.routes";
 import { customerPortalRoutes } from './routes/customer-portal.routes';
@@ -19,6 +22,7 @@ import financeRoutes from './routes/finance.routes';
 import dashboardRoutes from './routes/dashboard.routes';
 import subscriptionRoutes from './routes/subscription.routes';
 import { settingsRoutes } from './routes/settings.routes';
+import { publicRoutes } from './routes/public.routes';
 import { superAdminRoutes } from './routes/super-admin.routes';
 import { webhookRoutes } from './routes/webhook.routes';
 import { catalogoRoutes } from './routes/catalogo.routes';
@@ -41,9 +45,12 @@ import { whatsappRoutes } from './routes/whatsapp.routes';
 import { serviceOrderRoutes } from './routes/service-order.routes';
 import { appointmentRoutes } from './routes/appointment.routes';
 import { insightsRouter } from './routes/insights';
+import petRoutes from "./routes/pet.routes";
 import { notificationRoutes } from './routes/notification.routes';
+import v2Routes from './routes/v2.routes';
 
 const app = express();
+app.set('trust proxy', 1);
 
 // ----- Request ID (rastreabilidade) -----
 app.use(requestIdMiddleware);
@@ -104,6 +111,7 @@ app.use(helmet({
 // ----- CORS -----
 const isProduction = process.env.NODE_ENV === 'production';
 const allowedOrigins = [
+  'http://localhost:3000',
   'http://localhost:5173',
   'http://127.0.0.1:5173',
   'http://localhost:5174',
@@ -121,11 +129,23 @@ app.use(cors({
 app.use(express.json({ limit: '5mb' }));
 app.use(cookieParser());
 
+// ----- Rate Limiting Global -----
+import rateLimitGlobal from 'express-rate-limit';
+const globalLimiter = rateLimitGlobal({
+  windowMs: 60 * 1000,
+  max: 200,
+  message: { error: 'Muitas requisições. Tente novamente em instantes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.path === '/health' || req.path === '/api/health',
+});
+app.use(globalLimiter);
+
 // ----- Modo Manutenção (check global) -----
 app.use(async (req, res, next) => {
   if (req.path.startsWith('/api/super-admin') || req.path === '/health') return next();
   try {
-    const { prisma } = await import('./lib/prisma');
+    // prisma importado estaticamente
     const setting = await prisma.systemSetting.findUnique({ where: { chave: 'MAINTENANCE_MODE' } });
     const modeValor = setting?.valor as { enabled?: boolean; message?: string } | null;
     if (modeValor?.enabled) {
@@ -137,12 +157,17 @@ app.use(async (req, res, next) => {
 
 import { supportRoutes } from './routes/support.routes';
 import { importRoutes } from './routes/import.routes';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import { personalFinanceRoutes } from './routes/personalFinance.routes';
+import rateLimit from 'express-rate-limit';
 
-// @ts-ignore
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const superAdminLimiter = rateLimit({ windowMs: 60 * 1000, max: 30, message: { error: 'Muitas requisições administrativas.' }, standardHeaders: true, legacyHeaders: false });
+const heavyQueryLimiter = rateLimit({ windowMs: 60 * 1000, max: 30, message: { error: 'Muitas consultas pesadas.' }, standardHeaders: true, legacyHeaders: false });
+const importLimiter = rateLimit({ windowMs: 60 * 1000, max: 10, message: { error: 'Muitas requisições de importação.' }, standardHeaders: true, legacyHeaders: false });
+const uploadLimiter = rateLimit({ windowMs: 60 * 1000, max: 10, message: { error: 'Muitos uploads. Tente novamente.' }, standardHeaders: true, legacyHeaders: false });
+const webhookLimiter = rateLimit({ windowMs: 60 * 1000, max: 20, message: { error: 'Muitas requisições de webhook.' }, standardHeaders: true, legacyHeaders: false });
+import path from 'path';
+
+declare const __dirname: string;
 
 // Servir arquivos estáticos (uploads de imagens) — protegido por autenticação
 // Apenas usuários autenticados podem acessar arquivos enviados
@@ -154,8 +179,7 @@ app.use('/uploads', (req, res, next) => {
     return res.status(401).json({ error: 'Acesso negado.' });
   }
   try {
-    const jwt = require('jsonwebtoken');
-    jwt.verify(token, process.env.JWT_SECRET || 'fallback');
+    verifyJwt(token);
     next();
   } catch {
     return res.status(401).json({ error: 'Token inválido.' });
@@ -169,7 +193,7 @@ app.get('/health', async (_req, res) => {
   let dbSize = 0;
   try {
     const dbStart = Date.now();
-    const { prisma } = await import('./lib/prisma');
+    // prisma importado estaticamente
     await prisma.$queryRaw`SELECT 1`;
     dbLatency = Date.now() - dbStart;
     dbOk = true;
@@ -204,6 +228,7 @@ app.get('/health', async (_req, res) => {
 });
 
 app.use('/api/auth', authRouter);
+app.use('/api/public', publicRoutes);
 app.use('/api/customers', customerRouter);
 app.use('/api/customer-portal', customerPortalRoutes);
   app.use('/api/categories', categoryRouter);
@@ -211,23 +236,24 @@ app.use('/api/customer-portal', customerPortalRoutes);
   app.use('/api/products', productRouter);
 app.use('/api/sales', saleRouter);
 app.use('/api/finance', financeRoutes);
-app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/dashboard', heavyQueryLimiter, dashboardRoutes);
 app.use('/api/subscriptions', subscriptionRoutes);
-app.use('/api/super-admin', superAdminRoutes);
-app.use('/api/webhooks', webhookRoutes);
+app.use('/api/super-admin', superAdminLimiter, superAdminRoutes);
+app.use('/api/webhooks', webhookLimiter, webhookRoutes);
 app.use('/api/catalogo', catalogoRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/support', supportRoutes);
-app.use('/api/import', importRoutes);
+app.use('/api/import', importLimiter, importRoutes);
 app.use('/api/product-entries', productEntryRouter);
-app.use('/api/planilha', planilhaRoutes);
+app.use('/api/planilha', uploadLimiter, planilhaRoutes);
 app.use('/api/stores', storeRoutes);
+app.use('/api/store', storeRoutes);
 app.use('/api/cash-register', cashRegisterRoutes);
 app.use('/api/payment-fees', paymentFeesRoutes);
 app.use('/api/commissions', commissionRoutes);
 app.use('/api/commission-payments', commissionPaymentRoutes);
 app.use('/api/suppliers', supplierRoutes);
-app.use('/api/bi', biRoutes);
+app.use('/api/bi', heavyQueryLimiter, biRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/stock-transfers', stockTransferRoutes);
 app.use('/api/inventory-counts', inventoryCountRoutes);
@@ -239,7 +265,11 @@ app.use('/api/service-orders', serviceOrderRoutes);
 app.use('/api/appointments', appointmentRoutes);
 app.use('/api/insights', insightsRouter);
 
+// Finanças Pessoais (PF)
+app.use('/api/personal', personalFinanceRoutes);
+
 // Notificações do sistema
+app.use('/api/pet', petRoutes);
 app.use('/api/notifications', notificationRoutes);
 
 // Admin alias — /api/admin/* same as /api/super-admin/*
@@ -254,6 +284,9 @@ app.get('/api/metrics', (_req, res) => {
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
+
+// V2 Routes
+app.use('/api/v2', v2Routes);
 
 // ----- 404 Handler -----
 app.use((req: Request, res: Response) => {

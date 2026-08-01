@@ -51,6 +51,9 @@ const MIN_ROLE_FOR_ACTION: Record<StoreAction, string> = {
 export function requireStorePermission(action: StoreAction, options?: { maxDiscount?: number; maxValue?: number }) {
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
+      // Super Admin impersonating: skip permission check
+      if ((req.user as any)?.isImpersonating) return next();
+
       const userId = req.user?.id;
       const storeId = req.user?.storeId;
 
@@ -85,9 +88,10 @@ export function requireStorePermission(action: StoreAction, options?: { maxDisco
           acc + (Number(i.quantidade) * Number(i.precoUnitarioVendido)), 0) || 0);
         
         const pctDesconto = total > 0 ? (desconto / total) * 100 : 0;
+        const maxDiscount = Number(access.limiteDescontoMaximo);
         
-        if (pctDesconto > Number(access.limiteDescontoMaximo)) {
-          return fail(res, `Desconto máximo permitido: ${access.limiteDescontoMaximo}%`, 403);
+        if (maxDiscount > 0 && pctDesconto > maxDiscount) {
+          return fail(res, `Desconto máximo permitido: ${maxDiscount}%`, 403);
         }
       }
 

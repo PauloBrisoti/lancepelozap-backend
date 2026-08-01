@@ -1,6 +1,8 @@
 import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
-import { subMonths, startOfMonth, endOfMonth, subDays, startOfDay, endOfDay, differenceInDays } from 'date-fns';
+import { addDays, addMonths, startOfMonth, endOfMonth, format } from 'date-fns';
+import { toZonedTime, fromZonedTime } from 'date-fns-tz';
+import { buildDateRange, getTimezone } from '../lib/dateUtils';
 
 export class DashboardController {
   
@@ -10,32 +12,14 @@ export class DashboardController {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ message: 'Não autorizado' });
 
-      // Handle Dates
       const queryStart = req.query.startDate as string;
       const queryEnd = req.query.endDate as string;
       
-      const hoje = new Date();
-      let startDate: Date;
-      let endDate: Date;
-      
-      if (queryStart && queryEnd) {
-        startDate = new Date(`${queryStart}T00:00:00.000Z`);
-        const endStr = String(queryEnd);
-        const endPlus1 = new Date(endStr);
-        endPlus1.setDate(endPlus1.getDate() + 1);
-        const endStr2 = endPlus1.toISOString().split('T')[0];
-        endDate = new Date(`${endStr2}T23:59:59.999Z`);
-      } else {
-        startDate = new Date(Date.UTC(hoje.getUTCFullYear(), hoje.getUTCMonth(), 1, 0, 0, 0, 0));
-        const tomorrow = new Date(hoje);
-        tomorrow.setDate(tomorrow.getDate() + 1);
-        endDate = new Date(Date.UTC(tomorrow.getUTCFullYear(), tomorrow.getUTCMonth(), tomorrow.getUTCDate(), 23, 59, 59, 999));
-      }
+      const { firstDay: startDate, lastDay: endDate } = buildDateRange(queryStart, queryEnd);
 
-      // Period duration for comparative calculations
-      const daysDiff = differenceInDays(endDate, startDate) || 1;
-      const prevStartDate = subDays(startDate, daysDiff);
-      const prevEndDate = subDays(endDate, daysDiff);
+      const daysDiff = Math.round((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) || 1;
+      const prevStartDate = new Date(startDate.getTime() - daysDiff * 86400000);
+      const prevEndDate = new Date(startDate.getTime() - 1);
 
       // 1. Receitas no Período Atual (Regime de Caixa e Competência)
       const vendasPeriodo = await prisma.sale.findMany({
@@ -76,13 +60,13 @@ export class DashboardController {
 
       const ticketMedioPeriodo = qtdPedidosPeriodo > 0 ? volumeVendasMes / qtdPedidosPeriodo : 0;
 
-      // 2. Receitas no Período Anterior (Para Comparativo)
-      const receitasPreviasAggregate = await prisma.financialTransaction.aggregate({
-        where: { storeId, tipo: 'ENTRADA', status: 'ATIVA', dataTransacao: { gte: prevStartDate, lte: prevEndDate } },
-        _sum: { valor: true }
+      // 2. Receitas no Período Anterior (Para Comparativo — competência, mesma base do DRE)
+      const prevSalesAgg = await prisma.sale.aggregate({
+        where: { storeId, status: { not: 'CANCELADA' }, dataVenda: { gte: prevStartDate, lte: prevEndDate } },
+        _sum: { valorTotalBruto: true, valorDesconto: true, valorTaxasGateway: true }
       });
-      const totalVendasPrevio = Number(receitasPreviasAggregate._sum.valor || 0);
-      const faturamentoCrescimento = totalVendasPrevio === 0 ? 100 : ((dinheiroCaixaRealizado - totalVendasPrevio) / totalVendasPrevio) * 100;
+      const prevFaturamentoLiquido = Number(prevSalesAgg._sum.valorTotalBruto || 0) - Number(prevSalesAgg._sum.valorDesconto || 0) - Number(prevSalesAgg._sum.valorTaxasGateway || 0);
+      const faturamentoCrescimento = prevFaturamentoLiquido === 0 ? 0 : ((faturamentoLiquido - prevFaturamentoLiquido) / prevFaturamentoLiquido) * 100;
 
       // 3. Faturamento Total Histórico (Regime de Caixa)
       const todasReceitas = await prisma.financialTransaction.aggregate({
@@ -117,19 +101,19 @@ export class DashboardController {
       const lucroBruto = faturamentoLiquido - cmvPeriodo;
       const margemBruta = faturamentoLiquido > 0 ? (lucroBruto / faturamentoLiquido) * 100 : 0;
 
-      const despesasPeriodoAggregate = await prisma.financialTransaction.aggregate({
-        where: { storeId, tipo: 'SAIDA', dataTransacao: { gte: startDate, lte: endDate } },
+const despesasPeriodoAggregate = await prisma.financialTransaction.aggregate({
+        where: { storeId, tipo: 'SAIDA', dataTransacao: { gte: startDate, lte: endDate }, categoria: { notIn: ['PRO_LABORE', 'DEVOLUCAO', 'RETIRADA_LUCRO', 'CANCELAMENTO'] } },
         _sum: { valor: true }
       });
       const despesasPeriodo = Number(despesasPeriodoAggregate._sum.valor || 0);
       const lucroLiquido = lucroBruto - despesasPeriodo;
       const margemLiquida = faturamentoLiquido > 0 ? (lucroLiquido / faturamentoLiquido) * 100 : 0;
 
-      // 5. Alertas de Estoque
-      const produtosEstoqueBaixo = await prisma.product.findMany({
-        where: { storeId, qtdEstoqueAtual: { lte: 5 } },
-        select: { id: true, nome: true, qtdEstoqueAtual: true }
-      });
+      // 5. Alertas de Estoque (respeita o estoque mínimo de cada produto)
+      const produtosEstoqueBaixo = (await prisma.product.findMany({
+        where: { storeId },
+        select: { id: true, nome: true, qtdEstoqueAtual: true, estoqueMinimo: true }
+      })).filter(p => Number(p.qtdEstoqueAtual) <= Number(p.estoqueMinimo));
 
       // 5. Últimas 5 vendas (dentro do período selecionado)
       const ultimasVendas = await prisma.sale.findMany({
@@ -157,33 +141,71 @@ export class DashboardController {
         .sort((a, b) => b.valor - a.valor)
         .slice(0, 5);
 
-      // 7. Dados para Gráfico (Receitas x Despesas dos últimos 6 meses)
+      // 7. Dados para Gráfico (Receitas x Despesas) — respeita o período do filtro
+      const tz = getTimezone();
+      const diffDays = Math.round((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
       const chartData = [];
-      for (let i = 5; i >= 0; i--) {
-        const monthStart = startOfMonth(subMonths(hoje, i));
-        const monthEnd = endOfMonth(subMonths(hoje, i));
-        const monthLabel = monthStart.toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' });
 
-        const revAggr = await prisma.financialTransaction.aggregate({
-          where: { storeId, tipo: 'ENTRADA', status: 'ATIVA', dataTransacao: { gte: monthStart, lte: monthEnd } },
-          _sum: { valor: true }
-        });
-        
-        const expAggr = await prisma.financialTransaction.aggregate({
-          where: { storeId, tipo: 'SAIDA', dataTransacao: { gte: monthStart, lte: monthEnd }, categoria: { notIn: ['PRO_LABORE', 'DEVOLUCAO', 'RETIRADA_LUCRO'] } },
-          _sum: { valor: true }
-        });
+      if (diffDays <= 31) {
+        // Agrupamento diário
+        for (let d = 0; d <= diffDays; d++) {
+          const day = addDays(toZonedTime(startDate, tz), d);
+          const ds = format(day, 'yyyy-MM-dd');
+          const dayStart = fromZonedTime(`${ds}T00:00:00.000`, tz);
+          const dayEnd = fromZonedTime(`${ds}T23:59:59.999`, tz);
 
-        chartData.push({
-          name: monthLabel,
-          receitas: Number(revAggr._sum.valor || 0),
-          despesas: Number(expAggr._sum.valor || 0)
-        });
+          const [r, e] = await Promise.all([
+            prisma.financialTransaction.aggregate({
+              where: { storeId, tipo: 'ENTRADA', status: 'ATIVA', dataTransacao: { gte: dayStart, lte: dayEnd } },
+              _sum: { valor: true }
+            }),
+            prisma.financialTransaction.aggregate({
+              where: { storeId, tipo: 'SAIDA', status: 'ATIVA', dataTransacao: { gte: dayStart, lte: dayEnd }, categoria: { notIn: ['PRO_LABORE', 'DEVOLUCAO', 'RETIRADA_LUCRO', 'CANCELAMENTO'] } },
+              _sum: { valor: true }
+            }),
+          ]);
+
+          chartData.push({
+            name: day.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }),
+            receitas: Number(r._sum.valor || 0),
+            despesas: Number(e._sum.valor || 0),
+          });
+        }
+      } else {
+        // Agrupamento mensal
+        let current = startOfMonth(toZonedTime(startDate, tz));
+        const lastMonth = endOfMonth(toZonedTime(endDate, tz));
+
+        while (current <= lastMonth) {
+          const ms = format(current, 'yyyy-MM-dd');
+          const me = format(endOfMonth(current), 'yyyy-MM-dd');
+          const monthStart = fromZonedTime(`${ms}T00:00:00.000`, tz);
+          const monthEnd = fromZonedTime(`${me}T23:59:59.999`, tz);
+
+          const [r, e] = await Promise.all([
+            prisma.financialTransaction.aggregate({
+              where: { storeId, tipo: 'ENTRADA', status: 'ATIVA', dataTransacao: { gte: monthStart, lte: monthEnd } },
+              _sum: { valor: true }
+            }),
+            prisma.financialTransaction.aggregate({
+              where: { storeId, tipo: 'SAIDA', status: 'ATIVA', dataTransacao: { gte: monthStart, lte: monthEnd }, categoria: { notIn: ['PRO_LABORE', 'DEVOLUCAO', 'RETIRADA_LUCRO', 'CANCELAMENTO'] } },
+              _sum: { valor: true }
+            }),
+          ]);
+
+          chartData.push({
+            name: current.toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' }),
+            receitas: Number(r._sum.valor || 0),
+            despesas: Number(e._sum.valor || 0),
+          });
+
+          current = addMonths(startOfMonth(current), 1);
+        }
       }
 
       return res.status(200).json({
         vendasHoje: dinheiroCaixaRealizado,
-        faturamentoPeriodo: dinheiroCaixaRealizado,
+        faturamentoPeriodo: faturamentoLiquido,
         faturamentoBruto,
         faturamentoLiquido,
         volumeVendasMes,
@@ -227,11 +249,11 @@ export class DashboardController {
       const role = req.user?.role;
       if (role !== 'SUPER_ADMIN') return res.status(403).json({ message: 'Acesso negado. Apenas SUPER_ADMIN.' });
 
-      const hoje = new Date();
-      const inicioMes = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
-      const fimMes = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0, 23, 59, 59, 999);
-      const mesPassado = new Date(hoje.getFullYear(), hoje.getMonth() - 1, 1);
-      const fimMesPassado = new Date(hoje.getFullYear(), hoje.getMonth(), 0, 23, 59, 59, 999);
+      const hojeTz = toZonedTime(new Date(), getTimezone());
+      const inicioMes = fromZonedTime(`${hojeTz.getFullYear()}-${String(hojeTz.getMonth()+1).padStart(2,'0')}-01T00:00:00.000`, getTimezone());
+      const fimMes = fromZonedTime(`${hojeTz.getFullYear()}-${String(hojeTz.getMonth()+1).padStart(2,'0')}-${new Date(hojeTz.getFullYear(), hojeTz.getMonth()+1, 0).getDate()}T23:59:59.999`, getTimezone());
+      const mesPassado = fromZonedTime(`${hojeTz.getFullYear()}-${String(hojeTz.getMonth()).padStart(2,'0')}-01T00:00:00.000`, getTimezone());
+      const fimMesPassado = fromZonedTime(`${hojeTz.getFullYear()}-${String(hojeTz.getMonth()).padStart(2,'0')}-${new Date(hojeTz.getFullYear(), hojeTz.getMonth(), 0).getDate()}T23:59:59.999`, getTimezone());
 
       const [
         totalStores, totalClients, totalUsers,
@@ -243,8 +265,16 @@ export class DashboardController {
         prisma.client.count(),
         prisma.user.count({ where: { role: 'USER' } }),
 
-        prisma.subscription.findMany({ where: { statusPagamento: 'PAGO' } }),
-        prisma.subscription.findMany({ where: { statusPagamento: 'VENCIDO' } }),
+        prisma.subscription.findMany({
+          where: { statusPagamento: 'PAGO' },
+          orderBy: { createdAt: 'desc' },
+          distinct: ['clientId'],
+        }),
+        prisma.subscription.findMany({
+          where: { statusPagamento: 'VENCIDO' },
+          orderBy: { createdAt: 'desc' },
+          distinct: ['clientId'],
+        }),
 
         prisma.client.count({ where: { createdAt: { gte: inicioMes, lte: fimMes } } }),
         prisma.client.count({ where: { createdAt: { gte: mesPassado, lte: fimMesPassado } } }),
@@ -277,8 +307,8 @@ export class DashboardController {
 
       const receitasUltimosMeses: { mes: string; receita: number }[] = [];
       for (let i = 5; i >= 0; i--) {
-        const d = new Date(hoje.getFullYear(), hoje.getMonth() - i, 1);
-        const fim = new Date(hoje.getFullYear(), hoje.getMonth() - i + 1, 0, 23, 59, 59, 999);
+        const d = new Date(hojeTz.getFullYear(), hojeTz.getMonth() - i, 1);
+        const fim = new Date(hojeTz.getFullYear(), hojeTz.getMonth() - i + 1, 0, 23, 59, 59, 999);
         const meses = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
         const mesLabel = `${meses[d.getMonth()]}/${String(d.getFullYear()).slice(2)}`;
 

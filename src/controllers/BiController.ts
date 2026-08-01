@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
+import { buildDateRange } from '../lib/dateUtils';
 
 export class BiController {
   async comparativo(req: Request, res: Response) {
@@ -14,16 +15,17 @@ export class BiController {
       }
 
       const buscarPeriodo = async (inicio: string, fim: string) => {
+        const { firstDay, lastDay } = buildDateRange(inicio, fim);
         const where = {
           storeId,
           status: { not: 'CANCELADA' },
-          dataVenda: { gte: new Date(inicio), lte: new Date(fim) },
+          dataVenda: { gte: firstDay, lte: lastDay },
         };
 
         const [vendas, totalVendas, totalItens] = await Promise.all([
           prisma.sale.findMany({ where, select: { valorTotalLiquido: true, cmvTotal: true, dataVenda: true } }),
           prisma.sale.count({ where }),
-          prisma.saleItem.count({ where: { sale: { storeId,           status: { not: 'CANCELADA' }, dataVenda: { gte: new Date(inicio), lte: new Date(fim) } } } }),
+          prisma.saleItem.count({ where: { sale: { storeId,           status: { not: 'CANCELADA' }, dataVenda: { gte: firstDay, lte: lastDay } } } }),
         ]);
 
         const receita = vendas.reduce((s, v) => s + Number(v.valorTotalLiquido), 0);
@@ -51,13 +53,15 @@ export class BiController {
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
       const { dataInicio, dataFim } = req.query;
-      const dateFilter = dataInicio && dataFim
-        ? { gte: new Date(dataInicio as string), lte: new Date(dataFim as string) }
-        : undefined;
+      let dateFilter = undefined;
+      if (dataInicio && dataFim) {
+        const d = buildDateRange(dataInicio as string, dataFim as string);
+        dateFilter = { gte: d.firstDay, lte: d.lastDay };
+      }
 
       const saleItems = await prisma.saleItem.findMany({
         where: {
-          sale: { storeId,           status: { not: 'CANCELADA' }, ...(dateFilter ? { dataVenda: dateFilter } : {}) },
+          sale: { storeId, status: { not: 'CANCELADA' }, ...(dateFilter ? { dataVenda: dateFilter } : {}) },
         },
         include: { product: { select: { id: true, nome: true, precoCusto: true } } },
       });
@@ -111,9 +115,11 @@ export class BiController {
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
       const { dataInicio, dataFim } = req.query;
-      const dateFilter = dataInicio && dataFim
-        ? { gte: new Date(dataInicio as string), lte: new Date(dataFim as string) }
-        : undefined;
+      let dateFilter = undefined;
+      if (dataInicio && dataFim) {
+        const d = buildDateRange(dataInicio as string, dataFim as string);
+        dateFilter = { gte: d.firstDay, lte: d.lastDay };
+      }
 
       const categories = await prisma.category.findMany({
         where: { storeId },
@@ -122,7 +128,7 @@ export class BiController {
 
       const saleItems = await prisma.saleItem.findMany({
         where: {
-          sale: { storeId,           status: { not: 'CANCELADA' }, ...(dateFilter ? { dataVenda: dateFilter } : {}) },
+          sale: { storeId, status: { not: 'CANCELADA' }, ...(dateFilter ? { dataVenda: dateFilter } : {}) },
         },
         include: { product: { select: { categoryId: true } } },
       });
@@ -164,9 +170,14 @@ export class BiController {
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
       const { dataInicio, dataFim } = req.query;
-      const dateFilter = dataInicio && dataFim
-        ? { gte: new Date(dataInicio as string), lte: new Date(dataFim as string) }
-        : { gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1) };
+      let dateFilter: any;
+      if (dataInicio && dataFim) {
+        const d = buildDateRange(dataInicio as string, dataFim as string);
+        dateFilter = { gte: d.firstDay, lte: d.lastDay };
+      } else {
+        const d = buildDateRange();
+        dateFilter = { gte: d.firstDay, lte: d.lastDay };
+      }
 
       const sales = await prisma.sale.findMany({
         where: { storeId,           status: { not: 'CANCELADA' }, dataVenda: dateFilter },
@@ -205,9 +216,11 @@ export class BiController {
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
       const { dataInicio, dataFim, limit } = req.query;
-      const dateFilter = dataInicio && dataFim
-        ? { gte: new Date(dataInicio as string), lte: new Date(dataFim as string) }
-        : undefined;
+      let dateFilter = undefined;
+      if (dataInicio && dataFim) {
+        const d = buildDateRange(dataInicio as string, dataFim as string);
+        dateFilter = { gte: d.firstDay, lte: d.lastDay };
+      }
       const maxResults = Number(limit) || 10;
 
       const saleItems = await prisma.saleItem.findMany({
