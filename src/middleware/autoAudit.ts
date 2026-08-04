@@ -38,7 +38,7 @@ function determineAction(method: string, hasId: boolean): string | null {
 }
 
 export function autoAudit() {
-  return async (req: Request, res: Response, next: NextFunction) => {
+  return async (req: Request, _res: Response, next: NextFunction) => {
     const userId = req.user?.id as string;
     if (!userId || req.method === 'GET') return next();
 
@@ -52,23 +52,20 @@ export function autoAudit() {
     const acao = determineAction(req.method, !!id);
     if (!acao) return next();
 
+    let oldData: unknown;
     if (id && (acao === 'ATUALIZAR' || acao === 'EXCLUIR')) {
       try {
-        (req as any).__oldData = await config.delegate.findUnique({ where: { id } });
+        oldData = await config.delegate.findUnique({ where: { id } });
       } catch { /* ignore */ }
     }
 
-    res.on('finish', () => {
-      if (res.statusCode >= 200 && res.statusCode < 300) {
-        auditLog({
-          storeId: req.user?.storeId,
-          userId,
-          acao,
-          tabelaAfetada: config.singular,
-          dadosAntigos: (req as any).__oldData || undefined,
-          dadosNovos: acao === 'EXCLUIR' ? undefined : req.body,
-        }).catch(console.error);
-      }
+    await auditLog({
+      storeId: req.user?.storeId,
+      userId,
+      acao,
+      tabelaAfetada: config.singular,
+      dadosAntigos: oldData || undefined,
+      dadosNovos: acao === 'EXCLUIR' ? undefined : req.body,
     });
 
     next();

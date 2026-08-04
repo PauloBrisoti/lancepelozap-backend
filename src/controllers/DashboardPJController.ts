@@ -490,6 +490,7 @@ export class DashboardPJController {
           prevDespesa,
           prevEntradas,
           prevSaidas,
+          receita,
         };
       }));
 
@@ -601,6 +602,11 @@ export class DashboardPJController {
         stores: storeMetrics,
         faturamentoPorDia,
         consolidated: {
+          volumeVendas: total.volumeVendas,
+          receita: total.entradasDoMes,
+          lucroBruto: total.faturamentoLiquido - total.cmv,
+          estoqueImobilizado: total.estoqueImobilizado,
+          aReceberFiado: total.aReceberFiado,
           fluxoFinanceiro: {
             saldoAcumulado: total.saldoAcumulado,
             entradasDoMes: total.entradasDoMes,

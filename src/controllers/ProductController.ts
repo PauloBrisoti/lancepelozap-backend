@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { prisma } from "../lib/prisma";
+import { parseDate } from "../lib/dateUtils";
 
 export class ProductController {
   async list(req: Request, res: Response) {
@@ -131,8 +132,8 @@ export class ProductController {
           qtdEstoqueAtual: qtdEstoqueAtual || 0,
           imageUrl,
           status: status || 'ATIVO',
-          dataPedido: dataPedido ? new Date(dataPedido) : null,
-          previsaoChegada: previsaoChegada ? new Date(previsaoChegada) : null
+          dataPedido: parseDate(dataPedido),
+          previsaoChegada: parseDate(previsaoChegada)
         }
       });
 
@@ -217,8 +218,8 @@ export class ProductController {
           qtdEstoqueAtual,
           imageUrl,
           status,
-          dataPedido: dataPedido ? new Date(dataPedido) : null,
-          previsaoChegada: previsaoChegada ? new Date(previsaoChegada) : null
+          dataPedido: parseDate(dataPedido),
+          previsaoChegada: parseDate(previsaoChegada)
         }
       });
 

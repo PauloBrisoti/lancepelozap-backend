@@ -1,6 +1,29 @@
 import { Request, Response, NextFunction } from "express";
 import { prisma } from "../lib/prisma";
 
+const methodToAction = (req: Request): string => {
+  switch (req.method) {
+    case "POST":
+      return "create";
+    case "PUT":
+    case "PATCH":
+      return "update";
+    case "DELETE":
+      return "delete";
+    default:
+      return "read";
+  }
+};
+
+const isAccessExpired = (user: { expiresAt?: Date | null }): boolean => {
+  return !!user.expiresAt && user.expiresAt.getTime() < Date.now();
+};
+
+const isLockdownActive = async (): Promise<boolean> => {
+  const setting = await prisma.systemSetting.findUnique({ where: { chave: 'PAINEL_LOCKDOWN' } });
+  return setting?.valor === true;
+};
+
 export const requireInternalPermission = (moduleName: string, requiredLevel: "FULL" | "VIEW") => {
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -10,6 +33,13 @@ export const requireInternalPermission = (moduleName: string, requiredLevel: "FU
       // Se não for admin e não tiver internalRoleId
       if (user.role !== "SUPER_ADMIN" && !user.internalRoleId) {
         return res.status(403).json({ error: "Acesso negado." });
+      }
+
+      // Modo de emergência: apenas Super Admin raiz acessa
+      if (user.role !== "SUPER_ADMIN" || user.internalRoleId) {
+        if (await isLockdownActive()) {
+          return res.status(403).json({ error: "Modo de emergência ativado. Apenas administradores raiz podem acessar." });
+        }
       }
 
       // Se não houver internalRoleId carregado, podemos tentar buscar
@@ -28,21 +58,46 @@ export const requireInternalPermission = (moduleName: string, requiredLevel: "FU
 
       // SUPER_ADMIN nativo sempre passa
       if (dbUser.internalRole.name === "SUPER_ADMIN") {
+        if (isAccessExpired(dbUser)) {
+          return res.status(403).json({ error: "Acesso expirado. Contate um administrador." });
+        }
         return next();
+      }
+
+      // Acesso temporário expirado bloqueia tudo
+      if (isAccessExpired(dbUser)) {
+        return res.status(403).json({ error: "Acesso expirado. Contate um administrador." });
       }
 
       // Verifica permissões
       const permission = dbUser.internalRole.permissions.find(p => p.module === moduleName);
 
-      if (!permission || permission.accessLevel === "NONE") {
+      if (!permission || (permission.accessLevel === "NONE" && permission.actions.length === 0)) {
         return res.status(403).json({ error: "Você não tem acesso a este módulo." });
       }
 
-      if (requiredLevel === "FULL" && permission.accessLevel === "VIEW") {
+      // FULL cobre todas as ações
+      if (permission.accessLevel === "FULL") {
+        return next();
+      }
+
+      const action = methodToAction(req);
+
+      // VIEW cobre leitura
+      if (permission.accessLevel === "VIEW" && action === "read") {
+        return next();
+      }
+
+      // Granular: lista fina de ações autorizadas
+      if (permission.actions.includes(action)) {
+        return next();
+      }
+
+      if (requiredLevel === "FULL") {
         return res.status(403).json({ error: "Acesso somente leitura. Ação não permitida." });
       }
 
-      next();
+      return res.status(403).json({ error: "Você não tem acesso a este módulo." });
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: "Erro interno de autorização." });

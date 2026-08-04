@@ -29,6 +29,14 @@ saleRouter.put("/:id/cancel",
   requireStorePermission('cancelar_venda'),
   saleController.cancel
 );
+saleRouter.post("/:id/request-delete",
+  requireStorePermission('cancelar_venda'),
+  saleController.requestDelete
+);
+saleRouter.post("/:id/confirm-delete",
+  requireStorePermission('cancelar_venda'),
+  saleController.delete
+);
 saleRouter.delete("/:id",
   requireStorePermission('cancelar_venda'),
   saleController.delete

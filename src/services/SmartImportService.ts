@@ -3,6 +3,7 @@ import fs from 'fs';
 import { prisma } from '../lib/prisma';
 import ExcelJS from 'exceljs';
 import path from 'path';
+import { parseDate } from '../lib/dateUtils';
 
 export class SmartImportService {
   static async processFile(storeId: string, filePath: string, originalName: string) {
@@ -194,7 +195,7 @@ ATENÇÃO: É EXTREMAMENTE CRÍTICO QUE VOCÊ EXTRAIA TODAS AS LINHAS E TODOS OS
             customerMap.set(nomeClienteLimpo.toLowerCase(), newC.id);
           }
 
-          const date = v?.data ? new Date(v.data) : new Date();
+          const date = v?.data ? (parseDate(v.data) || new Date()) : new Date();
           const formaPgto = v?.formaPgto || 'PIX';
           const cmvTotal = v?.produtos?.reduce((acc: number, p: any) => acc + (this.sanitizeNumber(p?.custo) * this.sanitizeNumber(p?.qtd || 1)), 0) || 0;
           const valorTotalVenda = this.sanitizeNumber(v?.valorTotal);
@@ -283,7 +284,7 @@ ATENÇÃO: É EXTREMAMENTE CRÍTICO QUE VOCÊ EXTRAIA TODAS AS LINHAS E TODOS OS
     if (data?.transacoes_financeiras && Array.isArray(data.transacoes_financeiras)) {
       for (const t of data.transacoes_financeiras) {
         try {
-          const date = t?.data ? new Date(t.data) : new Date();
+          const date = t?.data ? (parseDate(t.data) || new Date()) : new Date();
           const valor = this.sanitizeNumber(t?.valor);
           const tipo = t?.tipo === 'SAIDA' ? 'SAIDA' : 'ENTRADA';
 

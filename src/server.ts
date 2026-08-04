@@ -4,6 +4,7 @@ import { prisma } from './lib/prisma';
 import cron from "node-cron";
 import { processarCobrancasRecorrentes } from "./services/PetRecorrenciaCron";
 import { processarLembretesHospedagem } from "./services/PetLembretesService";
+import { executarVarreduraAutomatica } from "./services/VarreduraFinanceiraService";
 
 console.log('>>> SERVER STARTING <<<');
 
@@ -31,8 +32,13 @@ app.listen(PORT, () => {
 
 cron.schedule("0 2 * * *", () => {
   processarCobrancasRecorrentes();
-});
+}, { timezone: "America/Sao_Paulo" });
 
 cron.schedule("0 8 * * *", () => {
   processarLembretesHospedagem();
-});
+}, { timezone: "America/Sao_Paulo" });
+
+// Varredura Financeira diária às 09:00 (horário de Brasília) — idempotente por dia
+cron.schedule("0 9 * * *", () => {
+  executarVarreduraAutomatica();
+}, { timezone: "America/Sao_Paulo" });

@@ -1,10 +1,12 @@
 import { Request, Response } from "express";
+import { randomUUID } from "crypto";
+import jwt from "jsonwebtoken";
 import { prisma } from "../lib/prisma";
 import { StockMovementService } from "../services/StockMovementService";
 import { WhatsAppService } from "../services/WhatsAppService";
 import { FeeCalculationService } from "../services/FeeCalculationService";
 import { comparePassword } from "../utils/password";
-import { buildDateRange } from "../lib/dateUtils";
+import { buildDateRange, parseDate } from "../lib/dateUtils";
 
 export class SaleController {
   async summary(req: Request, res: Response) {
@@ -198,7 +200,7 @@ export class SaleController {
       const cartaoImediato = storeConfig?.cartaoImediato ?? true;
 
       // Resolve sale date: use client-provided or current timestamp
-      const saleDate = dataVenda ? new Date(dataVenda) : new Date();
+      const saleDate = parseDate(dataVenda) ?? new Date();
 
       // 1. Transaction Start
       const result = await prisma.$transaction(async (tx) => {
@@ -522,7 +524,7 @@ export class SaleController {
         if (customerId !== undefined) updateData.customerId = customerId || null;
         if (formaPagamento !== undefined) updateData.formaPagamento = formaPagamento;
         if (numeroParcelas !== undefined) updateData.numeroParcelas = Number(numeroParcelas);
-        if (dataVenda !== undefined) updateData.dataVenda = new Date(dataVenda);
+        if (dataVenda !== undefined && dataVenda !== null) updateData.dataVenda = parseDate(dataVenda);
 
         // Recalcular taxas se formaPagamento ou numeroParcelas mudar
         const novoPagamento = formaPagamento ?? sale.formaPagamento;
@@ -854,6 +856,44 @@ export class SaleController {
     }
   }
 
+  async requestDelete(req: Request, res: Response) {
+    try {
+      const storeId = req.user?.storeId || (req.user as any)?.tenant_id;
+      if (!storeId) {
+        return res.status(401).json({ message: "Tenant ID não encontrado no token" });
+      }
+
+      const { id } = req.params;
+
+      const JWT_SECRET = process.env.JWT_SECRET;
+      if (!JWT_SECRET) {
+        return res.status(500).json({ error: "Erro de configuração de servidor" });
+      }
+
+      const sale = await prisma.sale.findFirst({
+        where: { id: String(id), storeId },
+      });
+      if (!sale) {
+        return res.status(404).json({ message: "Venda não encontrada" });
+      }
+      if (sale.status === 'CANCELADA') {
+        return res.status(400).json({ message: "Venda já está cancelada" });
+      }
+
+      // Token de uso único (válido por 2 minutos) para confirmar a exclusão
+      const jti = randomUUID();
+      const token = jwt.sign(
+        { action: "sale:delete", saleId: sale.id, userId: req.user!.id, jti },
+        JWT_SECRET,
+        { expiresIn: "2m" }
+      );
+      res.json({ token, expiresIn: 120 });
+    } catch (error: any) {
+      console.error("Erro ao gerar token de exclusão:", error);
+      res.status(500).json({ message: "Erro interno do servidor", detail: error.message });
+    }
+  }
+
   async delete(req: Request, res: Response) {
     try {
       const storeId = req.user?.storeId || (req.user as any)?.tenant_id;
@@ -862,15 +902,32 @@ export class SaleController {
       }
 
       const { id } = req.params;
-      const { password } = req.body;
-      if (!password) {
-        return res.status(400).json({ message: "Senha do administrador é obrigatória" });
+      const { password, token } = req.body;
+
+      if (!password && !token) {
+        return res.status(400).json({ message: "Token de confirmação ou senha do administrador é obrigatório" });
       }
 
-      // Verify admin password
-      const user = await prisma.user.findUnique({ where: { id: req.user!.id } });
-      if (!user || !(await comparePassword(password, user.senhaHash))) {
-        return res.status(403).json({ message: "Senha inválida" });
+      if (token) {
+        // Valida token de exclusão gerado pelo request-delete
+        const JWT_SECRET = process.env.JWT_SECRET;
+        if (!JWT_SECRET) {
+          return res.status(500).json({ error: "Erro de configuração de servidor" });
+        }
+        try {
+          const payload = jwt.verify(token, JWT_SECRET) as { action: string; saleId: string; userId: string; jti: string };
+          if (payload.action !== "sale:delete" || payload.saleId !== String(id) || payload.userId !== req.user!.id) {
+            return res.status(403).json({ message: "Token de exclusão inválido" });
+          }
+        } catch (err) {
+          return res.status(401).json({ message: "Token de exclusão expirado ou inválido" });
+        }
+      } else {
+        // Verify admin password
+        const user = await prisma.user.findUnique({ where: { id: req.user!.id } });
+        if (!user || !(await comparePassword(password, user.senhaHash))) {
+          return res.status(403).json({ message: "Senha inválida" });
+        }
       }
 
       const sale = await prisma.sale.findFirst({

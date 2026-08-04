@@ -4,7 +4,7 @@ import bcrypt from 'bcryptjs';
 export async function createClientWithStore(options?: { visaoConsolidada?: boolean }) {
   const hash = await bcrypt.hash('123456', 10);
   
-  const userEmail = `userclient_${Date.now()}@test.com`;
+  const userEmail = `userclient_${Date.now()}@lpzteste.app`;
 
   const user = await prisma.user.create({
     data: {
@@ -18,7 +18,7 @@ export async function createClientWithStore(options?: { visaoConsolidada?: boole
   const client = await prisma.client.create({
     data: {
       nomeCompleto: 'Client Test Full',
-      email: `client_${Date.now()}@test.com`,
+      email: `client_${Date.now()}@lpzteste.app`,
       cnpjCpf: `12${Math.floor(Math.random() * 1000000000)}`.slice(0, 11),
       telefoneWhatsapp: '11999999999',
       allowConsolidatedView: options?.visaoConsolidada ?? false,
@@ -70,7 +70,7 @@ export async function createSuperAdmin() {
   const user = await prisma.user.create({
     data: {
       nome: 'Admin Test',
-      email: `admin_${Date.now()}@test.com`,
+      email: `admin_${Date.now()}@lpzteste.app`,
       senhaHash: hash,
       role: 'SUPER_ADMIN'
     }

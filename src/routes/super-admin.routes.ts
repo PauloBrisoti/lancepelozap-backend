@@ -5,6 +5,8 @@ import { PlanController } from '../controllers/PlanController';
 import { requireAuth } from '../middleware/auth';
 import { requireInternalPermission } from '../middleware/requireInternalPermission';
 import { requireDestructiveConfirmation } from '../middleware/requireDestructiveConfirmation';
+import { scopedClientFilter, requireScopedClientParam, requireScopedStoreParam } from '../middleware/requireClientScope';
+import { prisma } from '../lib/prisma';
 
 const router = Router();
 const superAdminController = new SuperAdminController();
@@ -14,9 +16,21 @@ const planController = new PlanController();
 // Todas as rotas deste arquivo requerem autenticação
 router.use(requireAuth);
 
-const requireStrictSuperAdmin = (req: Request, res: Response, next: NextFunction) => {
+const requireStrictSuperAdmin = async (req: Request, res: Response, next: NextFunction) => {
   if (req.user?.role !== 'SUPER_ADMIN') {
     return res.status(403).json({ error: 'Acesso negado. Apenas SUPER_ADMIN.' });
+  }
+  if (req.user.internalRoleId) {
+    const dbUser = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      include: { internalRole: { select: { name: true } } },
+    });
+    if (dbUser?.internalRole && dbUser.internalRole.name !== 'SUPER_ADMIN') {
+      return res.status(403).json({ error: 'Acesso negado. Papel interno não autorizado.' });
+    }
+    if (dbUser?.expiresAt && dbUser.expiresAt.getTime() < Date.now()) {
+      return res.status(403).json({ error: 'Acesso expirado. Contate um administrador.' });
+    }
   }
   next();
 };
@@ -27,30 +41,36 @@ const requireStrictSuperAdmin = (req: Request, res: Response, next: NextFunction
 router.get('/team/users', requireStrictSuperAdmin, teamController.listUsers.bind(teamController));
 router.post('/team/invite', requireStrictSuperAdmin, teamController.inviteUser.bind(teamController));
 router.patch('/team/users/:id/role', requireStrictSuperAdmin, teamController.changeRole.bind(teamController));
+router.patch('/team/users/:id/expiry', requireStrictSuperAdmin, teamController.updateUserExpiry.bind(teamController));
 router.delete('/team/users/:id', requireStrictSuperAdmin, teamController.revokeAccess.bind(teamController));
 router.get('/team/roles', requireStrictSuperAdmin, teamController.listRoles.bind(teamController));
+router.post('/team/roles', requireStrictSuperAdmin, teamController.createRole.bind(teamController));
+router.put('/team/roles/:id', requireStrictSuperAdmin, teamController.updateRole.bind(teamController));
 router.put('/team/roles/:id/permissions', requireStrictSuperAdmin, teamController.updateRolePermissions.bind(teamController));
+router.delete('/team/roles/:id', requireStrictSuperAdmin, teamController.deleteRole.bind(teamController));
 
 // ==========================================
 // ROTAS DE MÓDULOS ESPECÍFICOS (Com RBAC)
 // ==========================================
 
 // Dashboard: Mínimo necessário é visualizar Clientes ou Financeiro, mas por hora vamos proteger só com a auth e o controller resolve
-router.get('/dashboard', superAdminController.getDashboard.bind(superAdminController));
+router.get('/dashboard', scopedClientFilter, superAdminController.getDashboard.bind(superAdminController));
 
 // Módulo Clientes
-router.get('/clients', requireInternalPermission('CLIENTES', 'VIEW'), superAdminController.getAllClients.bind(superAdminController));
-router.get('/clients/:id', requireInternalPermission('CLIENTES', 'VIEW'), superAdminController.getClientById.bind(superAdminController));
+router.get('/clients', requireInternalPermission('CLIENTES', 'VIEW'), scopedClientFilter, superAdminController.getAllClients.bind(superAdminController));
+router.get('/clients/:id', requireInternalPermission('CLIENTES', 'VIEW'), requireScopedClientParam, superAdminController.getClientById.bind(superAdminController));
 router.post('/clients', requireInternalPermission('CLIENTES', 'FULL'), superAdminController.createClient.bind(superAdminController));
-router.put('/clients/:id', requireInternalPermission('CLIENTES', 'FULL'), superAdminController.updateClient.bind(superAdminController));
-router.delete('/clients/:id', requireInternalPermission('CLIENTES', 'FULL'), superAdminController.deleteClient.bind(superAdminController));
-router.get('/clients/:id/users', requireInternalPermission('CLIENTES', 'VIEW'), superAdminController.getClientUsers.bind(superAdminController));
-router.get('/clients/:clientId/usage', requireInternalPermission('CLIENTES', 'VIEW'), superAdminController.getUsageMetrics.bind(superAdminController));
-router.post('/clients/:clientId/add-pf-control', requireInternalPermission('CLIENTES', 'FULL'), superAdminController.addPfControl.bind(superAdminController));
+router.put('/clients/:id', requireInternalPermission('CLIENTES', 'FULL'), requireScopedClientParam, superAdminController.updateClient.bind(superAdminController));
+router.delete('/clients/:id', requireInternalPermission('CLIENTES', 'FULL'), requireScopedClientParam, superAdminController.deleteClient.bind(superAdminController));
+router.get('/clients/:id/users', requireInternalPermission('CLIENTES', 'VIEW'), requireScopedClientParam, superAdminController.getClientUsers.bind(superAdminController));
+router.get('/clients/:clientId/usage', requireInternalPermission('CLIENTES', 'VIEW'), requireScopedClientParam, superAdminController.getUsageMetrics.bind(superAdminController));
+router.post('/clients/:clientId/add-pf-control', requireInternalPermission('CLIENTES', 'FULL'), requireScopedClientParam, superAdminController.addPfControl.bind(superAdminController));
 
 // Módulo Configurações (White-label, Backup, Manutenção, API Keys)
 router.get('/settings', requireInternalPermission('CONFIGURACOES', 'VIEW'), superAdminController.getSystemSettings.bind(superAdminController));
 router.put('/settings', requireInternalPermission('CONFIGURACOES', 'FULL'), superAdminController.updateSystemSettings.bind(superAdminController));
+router.get('/settings/lockdown', requireStrictSuperAdmin, superAdminController.getLockdown.bind(superAdminController));
+router.put('/settings/lockdown', requireStrictSuperAdmin, requireDestructiveConfirmation, superAdminController.setLockdown.bind(superAdminController));
 
 // Anúncios in-app
 router.get('/announcements', requireInternalPermission('CONFIGURACOES', 'VIEW'), superAdminController.listAnnouncements.bind(superAdminController));
@@ -93,6 +113,13 @@ router.get('/financial-reports', requireInternalPermission('FINANCEIRO', 'VIEW')
 router.get('/overdue', requireInternalPermission('FINANCEIRO', 'VIEW'), superAdminController.listOverdue.bind(superAdminController));
 router.post('/trigger-billing', requireInternalPermission('FINANCEIRO', 'FULL'), superAdminController.triggerBilling.bind(superAdminController));
 
+// ==========================================
+// VARRE DURA FINANCEIRA (dry-run → confirmação → execução)
+// ==========================================
+router.get('/scan/plan', requireInternalPermission('FINANCEIRO', 'VIEW'), superAdminController.getScanPlan.bind(superAdminController));
+router.post('/scan/execute', requireInternalPermission('FINANCEIRO', 'FULL'), requireDestructiveConfirmation, superAdminController.executeScan.bind(superAdminController));
+router.get('/scan/runs', requireInternalPermission('FINANCEIRO', 'VIEW'), superAdminController.getScanRuns.bind(superAdminController));
+
 // Módulo Assinaturas e Faturas
 router.get('/subscriptions/:clientId/invoices', requireInternalPermission('CLIENTES', 'VIEW'), superAdminController.getClientInvoices.bind(superAdminController));
 router.put('/subscriptions/:id/cancel', requireInternalPermission('FINANCEIRO', 'FULL'), superAdminController.cancelSubscription.bind(superAdminController));
@@ -132,7 +159,10 @@ router.post('/pending-registrations/:id/reject', requireInternalPermission('CLIE
 router.post('/reset-database', requireInternalPermission('CONFIGURACOES', 'FULL'), requireDestructiveConfirmation, superAdminController.resetDatabase.bind(superAdminController));
 
 // Módulo Acesso e Liberações (Impersonation)
-router.post('/impersonate/:storeId', requireInternalPermission('ACESSO_E_LIBERACOES', 'FULL'), superAdminController.impersonate.bind(superAdminController));
+router.post('/impersonate/:storeId', requireInternalPermission('ACESSO_E_LIBERACOES', 'FULL'), requireScopedStoreParam, superAdminController.impersonate.bind(superAdminController));
 router.post('/revert-impersonate', superAdminController.revertImpersonation.bind(superAdminController));
+router.get('/impersonation-logs', requireInternalPermission('ACESSO_E_LIBERACOES', 'VIEW'), superAdminController.getImpersonationLogs.bind(superAdminController));
+router.post('/clients/:id/restore', requireInternalPermission('CLIENTES', 'FULL'), superAdminController.restoreClient.bind(superAdminController));
+router.post('/clients/:id/purge', requireInternalPermission('CLIENTES', 'FULL'), superAdminController.purgeClient.bind(superAdminController));
 
 export { router as superAdminRoutes };

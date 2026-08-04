@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { prisma } from "../lib/prisma";
+import { parseDate } from "../lib/dateUtils";
 
 // Contrato de Requisitos - Motor Financeiro (seção 3 e 2.4)
 // Âncora o dia do vencimento ao dia de faturamento do cartão (sem estourar o mês)
@@ -221,7 +222,7 @@ export class PurchaseOrderController {
           customerId: customerId || null,
           orderNumber: nextNumber,
           dataPedido: compraDate,
-          dataPrevisao: dataPrevisao ? new Date(dataPrevisao) : null,
+          dataPrevisao: parseDate(dataPrevisao),
           formaPagamento: forma,
           valorFrete: freteValor,
           valorTotalBruto,
@@ -330,7 +331,7 @@ export class PurchaseOrderController {
             data: {
               status: "ENCOMENDA",
               dataPedido: new Date(),
-              previsaoChegada: dataPrevisao ? new Date(dataPrevisao) : undefined,
+              previsaoChegada: dataPrevisao ? parseDate(dataPrevisao) : undefined,
             },
           });
         }
@@ -395,7 +396,7 @@ export class PurchaseOrderController {
         data: {
           supplierId: supplierId !== undefined ? (supplierId || null) : existing.supplierId,
           customerId: customerId !== undefined ? (customerId || null) : existing.customerId,
-          dataPrevisao: dataPrevisao !== undefined ? (dataPrevisao ? new Date(dataPrevisao) : null) : existing.dataPrevisao,
+          dataPrevisao: dataPrevisao !== undefined ? parseDate(dataPrevisao) : existing.dataPrevisao,
           valorTotalBruto,
           valorDesconto: desconto,
           valorTotalLiquido,
@@ -423,7 +424,7 @@ export class PurchaseOrderController {
             data: {
               status: "ENCOMENDA",
               dataPedido: new Date(),
-              previsaoChegada: dataPrevisao ? new Date(dataPrevisao) : undefined,
+              previsaoChegada: dataPrevisao ? parseDate(dataPrevisao) : undefined,
             },
           });
         }

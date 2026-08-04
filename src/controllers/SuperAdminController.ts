@@ -6,7 +6,8 @@ import fs from 'fs';
 import path from 'path';
 import { exec } from 'child_process';
 import { toZonedTime, fromZonedTime } from 'date-fns-tz';
-import { getTimezone } from '../lib/dateUtils';
+import { getTimezone, parseDate } from '../lib/dateUtils';
+import { buildPlan, executePlan, enviarRelatorio } from '../services/VarreduraFinanceiraService';
 
 export class SuperAdminController {
 
@@ -18,20 +19,34 @@ export class SuperAdminController {
     try {
       // O middleware requireAuth e os middlewares do router já garantem o acesso
 
-      const totalClients = await prisma.client.count();
-      const totalStores = await prisma.store.count();
-      const totalUsers = await prisma.user.count();
+      const scopedClientId = (req as any).scopedClientId as string | undefined;
+      const scopeFilter = scopedClientId ? { clientId: scopedClientId } : {};
+
+      const totalClients = await prisma.client.count({ where: scopedClientId ? { id: scopedClientId } : {} });
+      const totalStores = scopedClientId
+        ? await prisma.control.count({ where: scopeFilter })
+        : await prisma.store.count();
+      const totalUsers = scopedClientId
+        ? await prisma.user.count({
+            where: {
+              OR: [
+                { clientAccess: { some: { clientId: scopedClientId } } },
+                { storeAccess: { some: { store: { control: { clientId: scopedClientId } } } } }
+              ]
+            }
+          })
+        : await prisma.user.count();
 
       // MRR do SaaS: Soma das mensalidades das assinaturas ativas/pagas
       const totalRevenueAggr = await prisma.subscription.aggregate({
         _sum: { valorMensalidade: true },
-        where: { statusPagamento: 'PAGO' }
+        where: { statusPagamento: 'PAGO', ...(scopedClientId ? { clientId: scopedClientId } : {}) }
       });
 
       // Faturas pendentes do SaaS
       const totalPendingReceivablesAggr = await prisma.invoice.aggregate({
         _sum: { valorCobrado: true },
-        where: { status: 'PENDENTE' }
+        where: { status: 'PENDENTE', ...(scopedClientId ? { subscription: { clientId: scopedClientId } } : {}) }
       });
 
       // Top Lojas por assinaturas mais caras (ou mantemos quantidade de usuários?)
@@ -39,7 +54,7 @@ export class SuperAdminController {
       const topStoresAggr = await prisma.subscription.groupBy({
         by: ['clientId'],
         _sum: { valorMensalidade: true },
-        where: { statusPagamento: 'PAGO' },
+        where: { statusPagamento: 'PAGO', ...(scopedClientId ? { clientId: scopedClientId } : {}) },
         orderBy: { _sum: { valorMensalidade: 'desc' } },
         take: 5
       });
@@ -79,7 +94,13 @@ export class SuperAdminController {
     try {
       // RBAC já validado na rota
 
+      const scopedClientId = (req as any).scopedClientId as string | undefined;
+
       const clients = await prisma.client.findMany({
+        where: {
+          ...(req.query.includeArchived === 'true' ? {} : { deletedAt: null }),
+          ...(scopedClientId ? { id: scopedClientId } : {})
+        },
         orderBy: { createdAt: 'desc' },
         include: {
           subscriptions: true,
@@ -104,6 +125,8 @@ export class SuperAdminController {
         emailContato: client.email,
         status: client.status,
         createdAt: client.createdAt,
+        isDemo: client.isDemo,
+        deletedAt: client.deletedAt,
         subscriptions: client.subscriptions,
         users: client.clientUsers.map(cu => cu.user),
         controls: client.controls
@@ -310,7 +333,7 @@ export class SuperAdminController {
   async updateClient(req: Request, res: Response) {
     try {
       const id = req.params.id as string;
-      const { nomeFantasia, cnpjCpf, nichoPrincipal, telefoneWhatsapp, emailContato, chavePix, status, cep, logradouro, numero, complemento, bairro, cidade, uf, planId: _planId, statusPagamento, dataVencimento, workspaceType } = req.body;
+      const { nomeFantasia, cnpjCpf, nichoPrincipal, telefoneWhatsapp, emailContato, chavePix, status, cep, logradouro, numero, complemento, bairro, cidade, uf, planId: _planId, statusPagamento, dataVencimento, workspaceType, isDemo } = req.body;
       const planId = req.body.planoId || _planId;
 
       const updateData: Record<string, any> = {};
@@ -319,6 +342,7 @@ export class SuperAdminController {
       if (telefoneWhatsapp) updateData.telefoneWhatsapp = telefoneWhatsapp;
       if (emailContato) updateData.email = emailContato;
       if (status) updateData.status = status;
+      if (typeof isDemo === 'boolean') updateData.isDemo = isDemo;
       if (cep) updateData.cep = cep;
       if (logradouro) updateData.logradouro = logradouro;
       if (numero) updateData.numero = numero;
@@ -331,6 +355,34 @@ export class SuperAdminController {
         where: { id },
         data: updateData
       });
+
+      if (nichoPrincipal !== undefined) {
+        const firstControl = await prisma.control.findFirst({
+          where: { clientId: id },
+          include: { stores: { take: 1, select: { id: true } } }
+        });
+        const firstStoreId = firstControl?.stores?.[0]?.id;
+        if (firstStoreId) {
+          await prisma.store.update({
+            where: { id: firstStoreId },
+            data: { nichoPrincipal: nichoPrincipal || null }
+          });
+        }
+      }
+
+      if (chavePix !== undefined) {
+        const firstControl = await prisma.control.findFirst({
+          where: { clientId: id },
+          include: { stores: { take: 1, select: { id: true } } }
+        });
+        const firstStoreId = firstControl?.stores?.[0]?.id;
+        if (firstStoreId) {
+          await prisma.store.update({
+            where: { id: firstStoreId },
+            data: { chavePix: chavePix || null }
+          });
+        }
+      }
 
       if (planId || statusPagamento || dataVencimento) {
         const latestSub = await prisma.subscription.findFirst({
@@ -350,7 +402,7 @@ export class SuperAdminController {
             updateData.statusPagamento = statusPagamento;
           }
           if (dataVencimento) {
-            updateData.dataVencimento = new Date(dataVencimento);
+            updateData.dataVencimento = parseDate(dataVencimento) || new Date();
           }
 
           await prisma.subscription.update({
@@ -483,6 +535,42 @@ export class SuperAdminController {
       return res.json({ message: 'Configurações atualizadas' });
     } catch (error) {
       return res.status(500).json({ error: 'Erro ao salvar configurações' });
+    }
+  }
+
+  // Modo de emergência: bloqueia todo o painel para papéis não-raiz
+  async getLockdown(req: Request, res: Response) {
+    try {
+      const setting = await prisma.systemSetting.findUnique({ where: { chave: 'PAINEL_LOCKDOWN' } });
+      return res.json({ enabled: setting?.valor === true });
+    } catch (error) {
+      return res.status(500).json({ error: 'Erro ao buscar modo de emergência' });
+    }
+  }
+
+  async setLockdown(req: Request, res: Response) {
+    try {
+      const { enabled } = req.body; // boolean
+
+      await prisma.systemSetting.upsert({
+        where: { chave: 'PAINEL_LOCKDOWN' },
+        update: { valor: !!enabled },
+        create: { chave: 'PAINEL_LOCKDOWN', valor: !!enabled, descricao: 'Modo de emergência do painel super-admin' }
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user!.id,
+          storeId: null,
+          acao: enabled ? "LOCKDOWN_ENABLED" : "LOCKDOWN_DISABLED",
+          tabelaAfetada: "system_settings",
+          dadosNovos: { enabled: !!enabled }
+        }
+      });
+
+      return res.json({ message: enabled ? 'Modo de emergência ativado.' : 'Modo de emergência desativado.' });
+    } catch (error) {
+      return res.status(500).json({ error: 'Erro ao alterar modo de emergência' });
     }
   }
 
@@ -886,6 +974,7 @@ export class SuperAdminController {
         select: {
           id: true, nome: true, email: true, role: true, ativo: true,
           createdAt: true,
+          lastLogin: true,
           clientAccess: { select: { client: { select: { nomeCompleto: true } } } },
           storeAccess: { select: { store: { select: { nomeFantasia: true } }, role: true } },
         },
@@ -898,6 +987,7 @@ export class SuperAdminController {
         role: u.role,
         ativo: u.ativo,
         createdAt: u.createdAt,
+        lastLogin: u.lastLogin,
         clients: u.clientAccess.map(ca => ca.client.nomeCompleto),
         stores: u.storeAccess.map(sa => ({
           nome: sa.store.nomeFantasia,
@@ -929,6 +1019,16 @@ export class SuperAdminController {
         data: { senhaHash: hashedPassword },
       });
 
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user!.id,
+          storeId: null,
+          acao: "USER_PASSWORD_RESET",
+          tabelaAfetada: "users",
+          dadosNovos: { userId, nome: user.nome }
+        }
+      });
+
       return res.json({ message: `Senha de ${user.nome} redefinida com sucesso` });
     } catch (error) {
       return res.status(500).json({ error: 'Erro ao redefinir senha' });
@@ -937,20 +1037,37 @@ export class SuperAdminController {
 
   async resetAllUserPasswords(req: Request, res: Response) {
     try {
-      const { senhaPadrao } = req.body;
+      const { senhaPadrao, userIds } = req.body;
       const password = senhaPadrao || 'Senha@123';
       if (password.length < 8) {
         return res.status(400).json({ error: 'Senha deve ter no mínimo 8 caracteres' });
       }
 
       const hashedPassword = await bcrypt.hash(password, 10);
+
+      // userIds presentes => reset seletivo (proteção: nunca inclui SUPER_ADMIN)
+      // ausente => todos os usuários exceto Super Admin
+      const where = Array.isArray(userIds) && userIds.length > 0
+        ? { id: { in: userIds }, role: { not: 'SUPER_ADMIN' } }
+        : { role: { not: 'SUPER_ADMIN' } };
+
       const result = await prisma.user.updateMany({
-        where: { role: { not: 'SUPER_ADMIN' } },
+        where,
         data: { senhaHash: hashedPassword },
       });
 
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user!.id,
+          storeId: null,
+          acao: "USERS_PASSWORD_BULK_RESET",
+          tabelaAfetada: "users",
+          dadosNovos: { count: result.count, selecionados: Array.isArray(userIds) ? userIds.length : null }
+        }
+      });
+
       return res.json({
-        message: `Senha de ${result.count} usuário(s) redefinida para "${password}"`,
+        message: `Senha de ${result.count} usuário(s) redefinida`,
         count: result.count,
       });
     } catch (error) {
@@ -977,6 +1094,15 @@ export class SuperAdminController {
       }
       if (role !== undefined) data.role = role;
       if (ativo !== undefined) data.ativo = ativo;
+
+      // Proteção: nunca remover/desativar o último Super Admin ativo
+      const rebaixando = (role !== undefined && role !== 'SUPER_ADMIN') || (ativo === false);
+      if (user.role === 'SUPER_ADMIN' && rebaixando) {
+        const adminCount = await prisma.user.count({ where: { role: 'SUPER_ADMIN', ativo: true } });
+        if (adminCount <= 1) {
+          return res.status(400).json({ error: 'Não é possível remover ou desativar o último Super Admin.' });
+        }
+      }
 
       await prisma.user.update({
         where: { id: userId },
@@ -1015,6 +1141,40 @@ export class SuperAdminController {
       const client = await prisma.client.findUnique({ where: { id: clientId } });
       if (!client) return res.status(404).json({ error: 'Cliente não encontrado' });
 
+      await prisma.client.update({
+        where: { id: clientId },
+        data: { deletedAt: new Date() }
+      });
+
+      return res.json({ message: 'Cliente arquivado.' });
+    } catch (error: any) {
+      return res.status(500).json({ error: error.message || 'Erro ao arquivar cliente' });
+    }
+  }
+
+  async restoreClient(req: Request, res: Response) {
+    try {
+      const clientId = req.params.id as string;
+      const client = await prisma.client.findUnique({ where: { id: clientId } });
+      if (!client) return res.status(404).json({ error: 'Cliente não encontrado' });
+
+      await prisma.client.update({
+        where: { id: clientId },
+        data: { deletedAt: null }
+      });
+
+      return res.json({ message: 'Cliente restaurado.' });
+    } catch (error: any) {
+      return res.status(500).json({ error: error.message || 'Erro ao restaurar cliente' });
+    }
+  }
+
+  async purgeClient(req: Request, res: Response) {
+    try {
+      const clientId = req.params.id as string;
+      const client = await prisma.client.findUnique({ where: { id: clientId } });
+      if (!client) return res.status(404).json({ error: 'Cliente não encontrado' });
+
       await prisma.$transaction(async (tx) => {
         // Apagar dados associados
         const controls = await tx.control.findMany({ where: { clientId }, select: { id: true } });
@@ -1029,7 +1189,7 @@ export class SuperAdminController {
         await tx.client.delete({ where: { id: clientId } });
       });
 
-      return res.json({ message: 'Cliente e todos os dados associados foram excluídos.' });
+      return res.json({ message: 'Cliente e todos os dados associados foram excluídos definitivamente.' });
     } catch (error: any) {
       return res.status(500).json({ error: error.message || 'Erro ao excluir cliente' });
     }
@@ -1091,7 +1251,7 @@ export class SuperAdminController {
         data: {
           ...(planId && { planId }),
           ...(valorMensalidade !== undefined && { valorMensalidade }),
-          ...(dataVencimento && { dataVencimento: new Date(dataVencimento) }),
+          ...(dataVencimento && { dataVencimento: parseDate(dataVencimento) }),
         },
       });
 
@@ -1134,7 +1294,7 @@ export class SuperAdminController {
           mesReferencia,
           valorCobrado,
           status: 'PENDENTE',
-          dataPagamento: dataVencimento ? new Date(dataVencimento) : null,
+          dataPagamento: parseDate(dataVencimento),
         },
       });
 
@@ -1543,6 +1703,24 @@ export class SuperAdminController {
         { expiresIn: "1d" }
       );
 
+      const impersonator = await prisma.user.findUnique({
+        where: { id: req.user.id },
+        select: { nome: true, email: true }
+      });
+
+      prisma.impersonationLog.create({
+        data: {
+          impersonatorId: req.user.id,
+          impersonatorName: impersonator?.nome || null,
+          impersonatorEmail: impersonator?.email || null,
+          targetUserId,
+          targetStoreId: storeId,
+          storeName: store.nomeFantasia,
+        },
+      }).catch((err) => {
+        console.error('Erro ao registrar log de impersonação:', err.message);
+      });
+
       res.clearCookie('adminToken', { path: '/' });
 
       res.cookie("authToken", token, {
@@ -1609,6 +1787,24 @@ export class SuperAdminController {
     } catch (error) {
       console.error('Erro ao reverter sessão:', error);
       return res.status(500).json({ error: "Erro ao reverter sessão" });
+    }
+  }
+
+  // Histórico de acessos em God Mode (impersonação)
+  async getImpersonationLogs(req: Request, res: Response) {
+    try {
+      const { storeId, limit } = req.query;
+
+      const logs = await prisma.impersonationLog.findMany({
+        where: storeId ? { targetStoreId: storeId as string } : {},
+        orderBy: { createdAt: 'desc' },
+        take: Math.min(Number(limit) || 20, 100),
+      });
+
+      return res.json(logs);
+    } catch (error: any) {
+      console.error('Erro ao buscar logs de impersonação:', error.message);
+      return res.status(500).json({ error: 'Erro ao buscar logs de impersonação' });
     }
   }
 
@@ -1710,35 +1906,73 @@ export class SuperAdminController {
 
   async triggerBilling(req: Request, res: Response) {
     try {
-      const hoje = new Date();
-
-      const vencidas = await prisma.subscription.findMany({
-        where: {
-          dataVencimento: { lt: hoje },
-          statusPagamento: { notIn: ['PAGO', 'CANCELADO'] },
-        },
-        include: { client: { select: { nomeCompleto: true } } },
-      });
-
-      let atualizadas = 0;
-      for (const sub of vencidas) {
-        if (sub.statusPagamento !== 'VENCIDO') {
-          await prisma.subscription.update({
-            where: { id: sub.id },
-            data: { statusPagamento: 'VENCIDO' },
-          });
-          atualizadas++;
-        }
+      const plano = await buildPlan();
+      const { jaExecutadoHoje, resultado } = await executePlan(plano, 'manual');
+      if (!jaExecutadoHoje) {
+        await enviarRelatorio(plano, resultado, 'manual');
       }
 
+      const total = resultado?.detalhes?.length || 0;
       return res.json({
-        message: `Varredura concluída. ${vencidas.length} assinatura(s) vencida(s) encontrada(s), ${atualizadas} atualizada(s) para VENCIDO.`,
-        total: vencidas.length,
-        atualizadas,
+        message: `Varredura concluída. ${resultado?.marcadasVencido || 0} assinatura(s) marcada(s) para VENCIDO, ${resultado?.notificacoesEnviadas || 0} e-mail(s) enviado(s).`,
+        total,
+        atualizadas: resultado?.marcadasVencido || 0,
+        jaExecutadoHoje,
       });
     } catch (error) {
       console.error('Erro na varredura financeira:', error);
       return res.status(500).json({ error: 'Erro ao executar varredura financeira' });
+    }
+  }
+
+  // Dry-run da varredura: simula sem executar nada
+  async getScanPlan(req: Request, res: Response) {
+    try {
+      const plano = await buildPlan();
+      return res.json(plano);
+    } catch (error) {
+      console.error('Erro ao montar plano de varredura:', error);
+      return res.status(500).json({ error: 'Erro ao montar plano de varredura' });
+    }
+  }
+
+  // Executa a varredura a partir do plano (com confirmação por senha na rota)
+  async executeScan(req: Request, res: Response) {
+    try {
+      const plano = await buildPlan();
+      const { jaExecutadoHoje, resultado } = await executePlan(plano, `manual:${req.user?.id}`);
+      if (!jaExecutadoHoje) {
+        await enviarRelatorio(plano, resultado, `manual:${req.user?.id}`);
+      }
+
+      return res.json({
+        jaExecutadoHoje,
+        resultado,
+      });
+    } catch (error) {
+      console.error('Erro ao executar varredura:', error);
+      return res.status(500).json({ error: 'Erro ao executar varredura' });
+    }
+  }
+
+  // Histórico de execuções da varredura
+  async getScanRuns(req: Request, res: Response) {
+    try {
+      const runs = await prisma.scanRun.findMany({
+        orderBy: { data: 'desc' },
+        take: 10,
+        select: {
+          id: true,
+          data: true,
+          disparadoPor: true,
+          status: true,
+          resultado: true,
+        },
+      });
+      return res.json(runs);
+    } catch (error) {
+      console.error('Erro ao listar execuções da varredura:', error);
+      return res.status(500).json({ error: 'Erro ao listar execuções da varredura' });
     }
   }
 }

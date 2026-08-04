@@ -13,11 +13,11 @@ describe('validateEmployeeLimit', () => {
   beforeAll(async () => {
     const hash = await bcrypt.hash('123456', 10);
     user = await prisma.user.create({
-      data: { nome: 'Test', email: `limit_test_${TEST_SUFFIX}@test.com`, senhaHash: hash, role: 'USER' }
+      data: { nome: 'Test', email: `limit_test_${TEST_SUFFIX}@lpzteste.app`, senhaHash: hash, role: 'USER' }
     });
 
     client = await prisma.client.create({
-      data: { nomeCompleto: 'Test Client', email: `limit_client_${TEST_SUFFIX}@test.com` }
+      data: { nomeCompleto: 'Test Client', email: `limit_client_${TEST_SUFFIX}@lpzteste.app` }
     });
 
     const control = await prisma.control.create({
@@ -43,7 +43,7 @@ describe('validateEmployeeLimit', () => {
 
     for (let i = 0; i < 3; i++) {
       const u = await prisma.user.create({
-        data: { nome: `Func ${i}`, email: `func_limit_${i}_${Date.now()}@test.com`, senhaHash: hash, role: 'USER' }
+        data: { nome: `Func ${i}`, email: `func_limit_${i}_${Date.now()}@lpzteste.app`, senhaHash: hash, role: 'USER' }
       });
       users.push(u);
       await prisma.storeUserAccess.create({

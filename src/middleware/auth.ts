@@ -1,6 +1,8 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { prisma } from "../lib/prisma";
+import { startOfDay, differenceInCalendarDays } from "date-fns";
+import { getVarreduraConfig } from "../services/configuracaoFinanceira";
 
 interface JwtPayload {
   id: string;
@@ -117,19 +119,21 @@ async function checkActiveSubscription(
 
   if (!sub) return true;
 
-  const hoje = new Date();
-  hoje.setHours(0, 0, 0, 0);
-  const venc = new Date(sub.dataVencimento);
-  venc.setHours(0, 0, 0, 0);
-
+  const config = await getVarreduraConfig();
+  const hoje = startOfDay(new Date());
+  const venc = startOfDay(new Date(sub.dataVencimento));
+  const diasAtraso = differenceInCalendarDays(hoje, venc);
   const vencido = venc < hoje;
+  // Período de graça configurável (mesma config da varredura financeira)
+  const dentroDaTolerancia = diasAtraso <= config.toleranciaAcessoDias;
 
-  // PENDENTE: nunca libera acesso — aguarda pagamento
+  // PENDENTE: libera dentro do período de graça — a varredura só marca
+  // VENCIDO após bloqueioAposDias (após o aviso de bloqueio)
   if (sub.statusPagamento === "PENDENTE") {
-    return false;
+    return dentroDaTolerancia;
   }
 
-  // INADIMPLENTE / VENCIDO: bloqueia
+  // INADIMPLENTE / VENCIDO: bloqueia (já passou do período de graça)
   if (sub.statusPagamento === "INADIMPLENTE" || sub.statusPagamento === "VENCIDO") {
     return false;
   }
@@ -143,9 +147,9 @@ async function checkActiveSubscription(
     return false;
   }
 
-  // PAGO: verifica se não está vencido (segurança extra)
+  // PAGO: período de graça antes de bloquear
   if (sub.statusPagamento === "PAGO" && vencido) {
-    return false;
+    return dentroDaTolerancia;
   }
 
   return true;

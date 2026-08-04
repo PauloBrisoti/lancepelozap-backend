@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { prisma } from "../lib/prisma";
+import { parseDate } from "../lib/dateUtils";
 
 export class QuoteController {
   async list(req: Request, res: Response) {
@@ -121,7 +122,7 @@ export class QuoteController {
           valorDesconto,
           valorTotalLiquido,
           observacoes: observacoes || null,
-          validade: validade ? new Date(validade) : null,
+          validade: parseDate(validade),
           items: { create: quoteItems },
         },
         include: {
@@ -197,7 +198,7 @@ export class QuoteController {
           valorDesconto,
           valorTotalLiquido,
           observacoes: observacoes !== undefined ? (observacoes || null) : existing.observacoes,
-          validade: validade !== undefined ? (validade ? new Date(validade) : null) : existing.validade,
+          validade: validade !== undefined ? (validade ? parseDate(validade) : null) : existing.validade,
           items: { create: quoteItems },
         },
         include: {
