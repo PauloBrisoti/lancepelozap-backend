@@ -52,12 +52,31 @@ model Client {
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+  isDemo    Boolean   @default(false) @map("is_demo")
 
-  controls      Control[]
-  subscriptions Subscription[]
-  clientUsers   ClientUser[]
+  controls          Control[]
+  subscriptions     Subscription[]
+  clientUsers       ClientUser[]
+  excecoesBloqueio  ExcecaoBloqueio[]
+  saasAuditLogs     SaasAuditLog[]
+  internalRoles     InternalRole[]
 
   @@map("clients")
+}
+
+model ImpersonationLog {
+  id                String   @id @default(cuid())
+  impersonatorId    String   @map("impersonator_id")
+  impersonatorName  String?  @map("impersonator_name")
+  impersonatorEmail String?  @map("impersonator_email")
+  targetUserId      String?  @map("target_user_id")
+  targetStoreId     String   @map("target_store_id")
+  storeName         String?  @map("store_name")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  @@index([targetStoreId, createdAt])
+  @@map("impersonation_logs")
 }
 
 model ClientUser {
@@ -92,7 +111,64 @@ model Subscription {
   plan     Plan      @relation(fields: [planId], references: [id])
   invoices Invoice[]
 
+  cobrancaNotificacoes CobrancaNotificacao[]
+
   @@map("subscriptions")
+}
+
+model CobrancaNotificacao {
+  id             String       @id @default(cuid())
+  subscriptionId String       @map("subscription_id")
+  // Tipo: 'LEMBRETE_1' | 'LEMBRETE_2' | 'AVISO_BLOQUEIO'
+  tipo           String
+  enviadaEm      DateTime     @default(now()) @map("enviada_em")
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@unique([subscriptionId, tipo])
+  @@map("cobranca_notificacoes")
+}
+
+model ScanRun {
+  id           String   @id @default(cuid())
+  data         DateTime @unique @map("data")
+  // Origem: 'cron' | 'manual:<email>'
+  disparadoPor String   @map("disparado_por")
+  // Status: 'PLANEJADO' | 'EXECUTADO' | 'FALHOU'
+  status       String   @default("EXECUTADO")
+  plano        Json     @map("plano")
+  resultado    Json?    @map("resultado")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("scan_runs")
+}
+
+model ExcecaoBloqueio {
+  id        String   @id @default(cuid())
+  clientId  String   @map("client_id")
+  motivo    String
+  criadoPor String   @map("criado_por")
+  // NULL = permanente
+  ate       DateTime?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  client Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@map("excecoes_bloqueio")
+}
+
+model SaasAuditLog {
+  id        String   @id @default(cuid())
+  clientId  String?  @map("client_id")
+  // Ação: 'MARCAR_VENCIDO' | 'NOTIFICACAO' | 'EXCECAO_BLOQUEIO' | 'VARRE_'
+  acao      String
+  payload   Json?
+  criadoPor String   @map("criado_por")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  client Client? @relation(fields: [clientId], references: [id], onDelete: SetNull)
+
+  @@map("saas_audit_logs")
 }
 
 model Invoice {
@@ -211,12 +287,14 @@ model User {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   internalRoleId       String?  @map("internal_role_id")
+  expiresAt            DateTime? @map("expires_at")
   twoFactorEnabled     Boolean  @default(false) @map("two_factor_enabled")
   twoFactorSecret      String?  @map("two_factor_secret")
   billingCycleStartDay Int      @default(1) @map("billing_cycle_start_day")
   monthlyBudgetLimit   Decimal? @map("monthly_budget_limit") @db.Decimal(12, 2)
   resetToken           String?  @map("reset_token")
   resetTokenExpires    DateTime? @map("reset_token_expires")
+  lastLogin            DateTime? @map("last_login")
 
   clientAccess         ClientUser[]
   storeAccess          StoreUserAccess[]
@@ -246,6 +324,8 @@ model InternalRole {
   name        String   @unique
   description String?
   isSystem    Boolean  @default(false)
+  clientId    String?  @map("client_id")
+  client      Client?  @relation(fields: [clientId], references: [id], onDelete: SetNull)
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
@@ -261,6 +341,7 @@ model InternalRolePermission {
   role        InternalRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
   module      String // ex: CLIENTES, FINANCEIRO, CHAMADOS, AUDITORIA
   accessLevel String       @map("access_level") // FULL, VIEW, NONE
+  actions     String[]     @default([]) // create, read, update, delete (granular)
   createdAt   DateTime     @default(now()) @map("created_at")
   updatedAt   DateTime     @updatedAt @map("updated_at")
 

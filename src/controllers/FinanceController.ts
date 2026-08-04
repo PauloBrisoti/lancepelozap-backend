@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { auditLog } from '../lib/audit';
-import { buildDateRange, getTimezone } from '../lib/dateUtils';
+import { buildDateRange, getTimezone, parseDate } from '../lib/dateUtils';
 import { toZonedTime } from 'date-fns-tz';
 
 async function deleteSaleTree(tx: any, sale: { id: string; saleItems: { id: string; productId: string; quantidade: any }[] }, storeId: string, userId: string) {
@@ -444,7 +444,7 @@ export class FinanceController {
           }
         });
 
-        const dtTransacao = dataTransacao ? new Date(dataTransacao) : undefined;
+        const dtTransacao = dataTransacao ? parseDate(dataTransacao) : undefined;
 
         // Atualizar transação
         const updatedTx = await tx.financialTransaction.update({
@@ -840,7 +840,7 @@ export class FinanceController {
           categoria,
           fornecedor,
           supplierId: supplierId || null,
-          dataVencimento: new Date(dataVencimento),
+          dataVencimento: parseDate(dataVencimento) || new Date(),
           valor: valorNum,
           numeroParcela: 1,
           totalParcelas: 1,
@@ -874,7 +874,7 @@ export class FinanceController {
           categoria: categoria !== undefined ? categoria : undefined,
           fornecedor: fornecedor !== undefined ? fornecedor : undefined,
           supplierId: supplierId !== undefined ? (supplierId || null) : undefined,
-          dataVencimento: dataVencimento !== undefined ? new Date(dataVencimento) : undefined,
+          dataVencimento: dataVencimento !== undefined ? (parseDate(dataVencimento) ?? undefined) : undefined,
           valor: valor !== undefined ? Number(valor) : undefined,
         },
       });

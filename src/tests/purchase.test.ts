@@ -57,10 +57,15 @@ describe('Compras / Purchase Orders (integração)', () => {
   });
 
   it('POST /api/purchases — cria pedido', async () => {
+    const wallet = await prisma.wallet.create({
+      data: { storeId: client.store.id, nome: 'Carteira Compra Teste', tipo: 'DINHEIRO', saldoAtual: 500 },
+    });
     const res = await agent.post('/api/purchases').send({
       supplierId,
       items: [{ productId: product.id, quantidade: 10, precoUnitario: 12.50 }],
       observacoes: 'Pedido de teste',
+      formaPagamento: 'A_VISTA',
+      walletIdEntrada: wallet.id,
     });
     expect(res.status).toBe(201);
     expect(res.body.orderNumber).toBeGreaterThan(0);

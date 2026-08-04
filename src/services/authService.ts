@@ -24,12 +24,21 @@ export async function validateUser(
     throw Object.assign(new Error("Credenciais inválidas"), { status: 401 });
   }
 
+  // Registrar último acesso (fuso UTC no banco; exibição converte para America/Sao_Paulo)
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { lastLogin: new Date() }
+  }).catch(() => {});
+
   // Verificar se a conta do cliente está ativa
   const clientAccess = user.clientAccess?.[0];
   if (clientAccess) {
     const client = await prisma.client.findUnique({ where: { id: clientAccess.clientId } });
     if (client && client.status === 'PENDENTE') {
       throw Object.assign(new Error("Sua conta ainda não foi aprovada. Aguarde o administrador."), { status: 403 });
+    }
+    if (client && client.deletedAt) {
+      throw Object.assign(new Error("Sua conta foi arquivada. Contate o suporte."), { status: 403 });
     }
   }
 

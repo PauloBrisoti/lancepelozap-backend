@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
+import { parseDate } from '../lib/dateUtils';
 
 export class ServiceOrderController {
   // ==================== SERVICE TYPES ====================
@@ -157,7 +158,7 @@ export class ServiceOrderController {
       const order = await prisma.serviceOrder.create({
         data: {
           storeId, userId, customerId, osNumber,
-          descricao, observacoes, dataPrevisao: dataPrevisao ? new Date(dataPrevisao) : null,
+          descricao, observacoes, dataPrevisao: parseDate(dataPrevisao),
           modeloEquipamento, numeroSerie, garantiaDias,
           maoDeObraValor, pecasValor, valorTotal,
           items: {
@@ -201,7 +202,7 @@ export class ServiceOrderController {
         where: { id },
         data: {
           descricao, observacoes,
-          dataPrevisao: dataPrevisao ? new Date(dataPrevisao) : undefined,
+          dataPrevisao: dataPrevisao ? parseDate(dataPrevisao) : undefined,
           modeloEquipamento, numeroSerie, garantiaDias,
         },
       });

@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { prisma } from "../lib/prisma";
 import { enviarLembreteRecorrencia, lembrarOrdem } from "../services/PetLembretesService";
+import { parseDate } from "../lib/dateUtils";
 
 // ============================================================
 // PET MODULE — Operacional Pet
@@ -120,7 +121,7 @@ export async function createPet(req: Request, res: Response) {
     const tutor = await prisma.petTutor.findFirst({ where: { id: tutorId, storeId } });
     if (!tutor) return res.status(400).json({ message: "Tutor nao encontrado" });
     const pet = await prisma.pet.create({
-      data: { storeId, tutorId, nome, especie, raca, porte, sexo, dataNascimento: dataNascimento ? new Date(dataNascimento) : null, cor, observacoes },
+      data: { storeId, tutorId, nome, especie, raca, porte, sexo, dataNascimento: parseDate(dataNascimento), cor, observacoes },
       include: { tutor: { select: { id: true, nome: true } } },
     });
     return res.status(201).json(pet);
@@ -139,7 +140,7 @@ export async function updatePet(req: Request, res: Response) {
     if (!existing) return res.status(404).json({ message: "Pet nao encontrado" });
     const { tutorId, nome, especie, raca, porte, sexo, dataNascimento, cor, observacoes } = req.body;
     const data: any = { tutorId, nome, especie, raca, porte, sexo, cor, observacoes };
-    if (dataNascimento) data.dataNascimento = new Date(dataNascimento);
+    if (dataNascimento) data.dataNascimento = parseDate(dataNascimento);
     const pet = await prisma.pet.update({ where: { id }, data });
     return res.json(pet);
   } catch (error) {
@@ -262,8 +263,8 @@ export async function createPetVaccine(req: Request, res: Response) {
         nome,
         tipo: tipo || "VACINA",
         dose: dose || null,
-        dataAplicacao: new Date(dataAplicacao),
-        proximaDose: proximaDose ? new Date(proximaDose) : null,
+        dataAplicacao: parseDate(dataAplicacao) || new Date(),
+        proximaDose: parseDate(proximaDose),
         observacoes: observacoes || null,
       },
       include: { pet: { select: { id: true, nome: true } } },
@@ -289,8 +290,8 @@ export async function updatePetVaccine(req: Request, res: Response) {
         nome: nome ?? existing.nome,
         tipo: tipo ?? existing.tipo,
         dose: dose !== undefined ? (dose || null) : existing.dose,
-        dataAplicacao: dataAplicacao ? new Date(dataAplicacao) : existing.dataAplicacao,
-        proximaDose: proximaDose !== undefined ? (proximaDose ? new Date(proximaDose) : null) : existing.proximaDose,
+        dataAplicacao: dataAplicacao ? (parseDate(dataAplicacao) ?? undefined) : existing.dataAplicacao,
+        proximaDose: proximaDose !== undefined ? (parseDate(proximaDose) ?? undefined) : existing.proximaDose,
         observacoes: observacoes !== undefined ? (observacoes || null) : existing.observacoes,
       },
     });
@@ -474,7 +475,7 @@ export async function createServiceOrder(req: Request, res: Response) {
     if (!storeId) return res.status(401).json({ message: "Loja nao identificada" });
     const { petId, dataEntrada, dataSaida, horaInicio, horaFim, items, desconto, observacoes, status, mesesRecorrencia, recorrente, periodicidadeMeses } = req.body;
     // Sanitize empty strings to null (frontend envios "" para campos opcionais)
-    const dataSaidaSanitized = (!dataSaida || dataSaida === "") ? null : new Date(dataSaida);
+    const dataSaidaSanitized = parseDate(dataSaida);
     const horaInicioSanitized = (!horaInicio || horaInicio === "") ? null : horaInicio;
     const horaFimSanitized = (!horaFim || horaFim === "") ? null : horaFim;
     if (!petId || !dataEntrada || !items || !Array.isArray(items) || items.length === 0) {
@@ -507,7 +508,7 @@ export async function createServiceOrder(req: Request, res: Response) {
     // - recorrente=true  -> recorrência contínua: cria 1 OS agora; a próxima é gerada
     //                       automaticamente a cada conclusão (até ser cancelada)
     // - mesesRecorrencia>1 -> cria N ordens agendadas de uma vez (uma por mês)
-    const entradaInicial = new Date(dataEntrada);
+    const entradaInicial = parseDate(dataEntrada) || new Date();
     const recorrenteContinuo = Boolean(recorrente);
     const periodicidade = Math.max(1, Math.min(12, Number(periodicidadeMeses) || 1));
     const qtdMeses = recorrenteContinuo ? 1 : Math.max(1, Math.min(24, Number(mesesRecorrencia) || 1));

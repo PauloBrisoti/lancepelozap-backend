@@ -2,6 +2,7 @@ import ExcelJS from 'exceljs';
 import { prisma } from '../lib/prisma';
 import fs from 'fs';
 import path from 'path';
+import { parseDate as parseLocalDate, todayInTimezone } from '../lib/dateUtils';
 
 // ============================================================
 // SINÔNIMOS DE COLUNAS — Mapeamento semântico
@@ -732,7 +733,7 @@ export class PlanilhaParserService {
           ? customerMap.get(v.clienteNome.toLowerCase())
           : undefined;
 
-        const dataVenda = v.data ? new Date(v.data) : new Date();
+        const dataVenda = v.data ? (parseLocalDate(v.data) || new Date()) : new Date();
         let cmvTotal = 0;
         const saleItemsData: any[] = [];
 
@@ -853,7 +854,7 @@ export class PlanilhaParserService {
       // 4. Importar fiado (crediário avulso)
       for (const rec of data.fiado) {
         const customerId = customerMap.get(rec.clienteNome.toLowerCase());
-        const dtVencimento = rec.vencimento ? new Date(rec.vencimento) : new Date();
+        const dtVencimento = rec.vencimento ? (parseLocalDate(rec.vencimento) || new Date()) : new Date();
 
         await tx.accountReceivable.create({
           data: {

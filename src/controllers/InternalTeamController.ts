@@ -29,7 +29,7 @@ export class InternalTeamController {
   // Convida um usuário (apenas insere no banco como PENDENTE por enquanto)
   async inviteUser(req: Request, res: Response) {
     try {
-      const { email, nome, roleId } = req.body;
+      const { email, nome, roleId, expiresAt } = req.body;
       
       const role = await prisma.internalRole.findUnique({ where: { id: roleId } });
       if (!role) return res.status(404).json({ error: "Papel não encontrado." });
@@ -48,7 +48,8 @@ export class InternalTeamController {
           senhaHash,
           role: role.name === "SUPER_ADMIN" ? "SUPER_ADMIN" : "USER",
           internalRoleId: role.id,
-          ativo: false // ficará false até aceitar
+          ativo: false, // ficará false até aceitar
+          expiresAt: expiresAt ? new Date(expiresAt) : null
         }
       });
 
@@ -58,7 +59,7 @@ export class InternalTeamController {
           storeId: null, // Log de equipe interna
           acao: "TEAM_INVITE_SENT",
           tabelaAfetada: "users",
-          dadosNovos: { email, roleId }
+          dadosNovos: { email, roleId, expiresAt: user.expiresAt }
         }
       });
 
@@ -66,6 +67,42 @@ export class InternalTeamController {
       res.json({ message: "Convite enviado (simulado).", user });
     } catch (error) {
       res.status(500).json({ error: "Erro ao convidar usuário." });
+    }
+  }
+
+  // Define ou remove a expiração de acesso de um usuário
+  async updateUserExpiry(req: Request, res: Response) {
+    try {
+      const id = req.params.id as string;
+      const { expiresAt } = req.body; // ISO string ou null
+
+      const user = await prisma.user.findUnique({ where: { id } });
+      if (!user) return res.status(404).json({ error: "Usuário não encontrado." });
+
+      const parsed = expiresAt ? new Date(expiresAt) : null;
+      if (parsed && Number.isNaN(parsed.getTime())) {
+        return res.status(400).json({ error: "Data de expiração inválida." });
+      }
+
+      await prisma.user.update({
+        where: { id },
+        data: { expiresAt: parsed }
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user!.id,
+          storeId: null,
+          acao: "TEAM_ACCESS_EXPIRY_UPDATED",
+          tabelaAfetada: "users",
+          dadosAntigos: { id, expiresAt: user.expiresAt },
+          dadosNovos: { id, expiresAt: parsed }
+        }
+      });
+
+      res.json({ message: "Expiração atualizada." });
+    } catch (error) {
+      res.status(500).json({ error: "Erro ao atualizar expiração." });
     }
   }
 
@@ -152,9 +189,13 @@ export class InternalTeamController {
   // Lista todos os papéis e permissões
   async listRoles(req: Request, res: Response) {
     try {
-      let roles = await prisma.internalRole.findMany({
-        include: { permissions: true }
-      });
+      const includeRoles = {
+        permissions: true,
+        _count: { select: { users: true } },
+        client: { select: { id: true, nomeCompleto: true } }
+      };
+
+      let roles = await prisma.internalRole.findMany({ include: includeRoles });
 
       // Auto-seed if empty
       if (roles.length === 0) {
@@ -181,8 +222,8 @@ export class InternalTeamController {
         });
 
         // Add some basic permissions
-        const modules = ['CLIENTES', 'PLANOS_E_MODULOS', 'ACESSO_E_LIBERACOES', 'FINANCEIRO', 'CHAMADOS', 'AUDITORIA', 'CONFIGURACOES'];
-        
+        const modules = ['CLIENTES', 'PLANOS_E_MODULOS', 'ACESSO_E_LIBERACOES', 'FINANCEIRO', 'AUDITORIA', 'CONFIGURACOES'];
+
         for (const mod of modules) {
           await prisma.internalRolePermission.create({
             data: { roleId: superAdminRole.id, module: mod, accessLevel: 'FULL' }
@@ -190,7 +231,6 @@ export class InternalTeamController {
         }
 
         // Support permissions
-        await prisma.internalRolePermission.create({ data: { roleId: supportRole.id, module: 'CHAMADOS', accessLevel: 'FULL' } });
         await prisma.internalRolePermission.create({ data: { roleId: supportRole.id, module: 'CLIENTES', accessLevel: 'VIEW' } });
 
         // Finance permissions
@@ -198,13 +238,154 @@ export class InternalTeamController {
         await prisma.internalRolePermission.create({ data: { roleId: financeRole.id, module: 'CLIENTES', accessLevel: 'VIEW' } });
 
         roles = await prisma.internalRole.findMany({
-          include: { permissions: true }
+          include: includeRoles
         });
       }
 
       res.json(roles);
     } catch (error) {
       res.status(500).json({ error: "Erro ao listar papéis." });
+    }
+  }
+
+  // Cria um novo papel
+  async createRole(req: Request, res: Response) {
+    try {
+      const { name, description, permissions, clientId } = req.body;
+
+      if (!name || !name.trim()) {
+        return res.status(400).json({ error: "Nome do papel é obrigatório." });
+      }
+
+      const existing = await prisma.internalRole.findUnique({ where: { name: name.trim().toUpperCase() } });
+      if (existing) return res.status(409).json({ error: "Já existe um papel com esse nome." });
+
+      if (clientId) {
+        const client = await prisma.client.findUnique({ where: { id: clientId } });
+        if (!client) return res.status(400).json({ error: "Cliente do escopo não encontrado." });
+      }
+
+      const role = await prisma.internalRole.create({
+        data: {
+          name: name.trim().toUpperCase(),
+          description: description || null,
+          clientId: clientId || null,
+          permissions: Array.isArray(permissions)
+            ? {
+                create: permissions
+                  .filter((p: any) => p.module && (p.accessLevel === 'FULL' || p.accessLevel === 'VIEW' || (Array.isArray(p.actions) && p.actions.length > 0)))
+                  .map((p: any) => ({
+                    module: p.module,
+                    accessLevel: p.accessLevel || 'NONE',
+                    actions: Array.isArray(p.actions) ? p.actions : []
+                  }))
+              }
+            : undefined
+        },
+        include: { permissions: true }
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user!.id,
+          storeId: null,
+          acao: "ROLE_CREATED",
+          tabelaAfetada: "internal_roles",
+          dadosNovos: { id: role.id, name: role.name }
+        }
+      });
+
+      res.status(201).json(role);
+    } catch (error) {
+      console.error("[InternalTeamController.createRole] Error:", error);
+      res.status(500).json({ error: "Erro ao criar papel." });
+    }
+  }
+
+  // Atualiza metadados de um papel (nome/descrição/escopo)
+  async updateRole(req: Request, res: Response) {
+    try {
+      const id = req.params.id as string;
+      const { name, description, clientId } = req.body;
+
+      const role = await prisma.internalRole.findUnique({ where: { id } });
+      if (!role) return res.status(404).json({ error: "Papel não encontrado." });
+      if (role.isSystem) return res.status(400).json({ error: "Papel de sistema não pode ser alterado." });
+
+      const data: Record<string, string | null> = {};
+      if (name !== undefined && name.trim()) {
+        const normalized = name.trim().toUpperCase();
+        const clash = await prisma.internalRole.findFirst({ where: { name: normalized, id: { not: id } } });
+        if (clash) return res.status(409).json({ error: "Já existe um papel com esse nome." });
+        data.name = normalized;
+      }
+      if (description !== undefined) data.description = description || null;
+      if (clientId !== undefined) {
+        if (clientId) {
+          const client = await prisma.client.findUnique({ where: { id: clientId } });
+          if (!client) return res.status(400).json({ error: "Cliente do escopo não encontrado." });
+        }
+        data.clientId = clientId || null;
+      }
+
+      const updated = await prisma.internalRole.update({
+        where: { id },
+        data,
+        include: { permissions: true }
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user!.id,
+          storeId: null,
+          acao: "ROLE_UPDATED",
+          tabelaAfetada: "internal_roles",
+          dadosAntigos: { name: role.name, description: role.description },
+          dadosNovos: { name: updated.name, description: updated.description }
+        }
+      });
+
+      res.json(updated);
+    } catch (error) {
+      console.error("[InternalTeamController.updateRole] Error:", error);
+      res.status(500).json({ error: "Erro ao atualizar papel." });
+    }
+  }
+
+  // Exclui um papel (protegido: sistema e papéis em uso)
+  async deleteRole(req: Request, res: Response) {
+    try {
+      const id = req.params.id as string;
+
+      const role = await prisma.internalRole.findUnique({
+        where: { id },
+        include: { _count: { select: { users: true } } }
+      });
+      if (!role) return res.status(404).json({ error: "Papel não encontrado." });
+      if (role.isSystem) return res.status(400).json({ error: "Papel de sistema não pode ser excluído." });
+      if (role._count.users > 0) {
+        return res.status(409).json({ error: `Papel em uso por ${role._count.users} usuário(s). Reatribua os usuários antes de excluir.` });
+      }
+
+      await prisma.$transaction(async (tx) => {
+        await tx.internalRolePermission.deleteMany({ where: { roleId: id } });
+        await tx.internalRole.delete({ where: { id } });
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user!.id,
+          storeId: null,
+          acao: "ROLE_DELETED",
+          tabelaAfetada: "internal_roles",
+          dadosAntigos: { id, name: role.name }
+        }
+      });
+
+      res.json({ message: "Papel excluído." });
+    } catch (error) {
+      console.error("[InternalTeamController.deleteRole] Error:", error);
+      res.status(500).json({ error: "Erro ao excluir papel." });
     }
   }
 
@@ -227,8 +408,8 @@ export class InternalTeamController {
       for (const p of permissions) {
         await prisma.internalRolePermission.upsert({
           where: { roleId_module: { roleId: role.id, module: p.module } },
-          update: { accessLevel: p.accessLevel },
-          create: { roleId: role.id, module: p.module, accessLevel: p.accessLevel }
+          update: { accessLevel: p.accessLevel, actions: Array.isArray(p.actions) ? p.actions : [] },
+          create: { roleId: role.id, module: p.module, accessLevel: p.accessLevel, actions: Array.isArray(p.actions) ? p.actions : [] }
         });
       }
 

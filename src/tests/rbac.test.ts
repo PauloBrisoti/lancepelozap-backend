@@ -8,6 +8,7 @@ import bcrypt from 'bcryptjs';
 describe('Permissões (RBAC interno e Visão Consolidada)', () => {
   let superToken: string;
   let supportToken: string;
+  let supportUserId: string;
   let clientA: any;
 
   beforeAll(async () => {
@@ -29,7 +30,7 @@ describe('Permissões (RBAC interno e Visão Consolidada)', () => {
     const supportUser = await prisma.user.create({
       data: {
         nome: 'Support Test',
-        email: `suporte_${Date.now()}@test.com`,
+        email: `suporte_${Date.now()}@lpzteste.app`,
         senhaHash: hash,
         role: 'SUPER_ADMIN',
         internalRoleId: role.id
@@ -38,6 +39,7 @@ describe('Permissões (RBAC interno e Visão Consolidada)', () => {
 
     const resSup = await request(app).post('/api/auth/login').send({ email: supportUser.email, password: '123456' });
     supportToken = resSup.headers['set-cookie'][0].split(';')[0].split('=')[1];
+    supportUserId = supportUser.id;
 
     clientA = await createClientWithStore({ visaoConsolidada: false });
   });
@@ -60,11 +62,12 @@ describe('Permissões (RBAC interno e Visão Consolidada)', () => {
   });
 
   it('Nenhum usuário consegue se autopromover', async () => {
-    // Suporte tenta trocar seu próprio papel ou adicionar permissões
+    // Suporte tenta alterar o próprio papel
     const res = await request(app)
-      .patch(`/api/super-admin/team/users/me/role`) // hipotético ou real
+      .patch(`/api/super-admin/team/users/${supportUserId}/role`)
       .set('Cookie', [`authToken=${supportToken}`])
       .send({ roleId: 'algum-id-admin' });
     expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/(Não autorizado|Acesso negado)/i);
   });
 });

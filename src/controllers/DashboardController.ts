@@ -257,66 +257,78 @@ const despesasPeriodoAggregate = await prisma.financialTransaction.aggregate({
 
       const [
         totalStores, totalClients, totalUsers,
-        subscriptionsAtivas, subscriptionsVencidas,
         novosClientesMes, clientesMesPassado,
-        receitaMeses,
       ] = await Promise.all([
         prisma.store.count(),
         prisma.client.count(),
         prisma.user.count({ where: { role: 'USER' } }),
-
-        prisma.subscription.findMany({
-          where: { statusPagamento: 'PAGO' },
-          orderBy: { createdAt: 'desc' },
-          distinct: ['clientId'],
-        }),
-        prisma.subscription.findMany({
-          where: { statusPagamento: 'VENCIDO' },
-          orderBy: { createdAt: 'desc' },
-          distinct: ['clientId'],
-        }),
-
         prisma.client.count({ where: { createdAt: { gte: inicioMes, lte: fimMes } } }),
         prisma.client.count({ where: { createdAt: { gte: mesPassado, lte: fimMesPassado } } }),
-
-        prisma.subscription.groupBy({
-          by: ['statusPagamento'],
-          _sum: { valorMensalidade: true },
-        }),
       ]);
 
-      const totalPayingClients = subscriptionsAtivas.length;
-      const totalVencidos = subscriptionsVencidas.length;
+      // Assinatura vigente por cliente (a mais recente por createdAt)
+      // — mesmo critério usado pelo middleware de auth (checkActiveSubscription)
+      const assinaturas = await prisma.subscription.findMany({
+        where: { statusPagamento: { not: 'CANCELADO' } },
+        orderBy: [{ clientId: 'asc' }, { createdAt: 'desc' }],
+        include: { client: { select: { nomeCompleto: true } } },
+      });
+      const porCliente = new Map<string, (typeof assinaturas)[number]>();
+      for (const sub of assinaturas) {
+        if (!porCliente.has(sub.clientId)) porCliente.set(sub.clientId, sub);
+      }
+      const vigentes = Array.from(porCliente.values());
+
+      const pagas = vigentes.filter(s => s.statusPagamento === 'PAGO');
+      const vencidas = vigentes.filter(s => s.statusPagamento === 'VENCIDO');
+      const pendentes = vigentes.filter(s => s.statusPagamento === 'PENDENTE');
+
+      const totalPayingClients = pagas.length;
+      const totalVencidos = vencidas.length;
       const totalSubscriptions = totalPayingClients + totalVencidos;
 
-      const mrr = subscriptionsAtivas.reduce((acc, s) => acc + Number(s.valorMensalidade), 0);
+      const mrr = pagas.reduce((acc, s) => acc + Number(s.valorMensalidade), 0);
       const arpu = totalPayingClients > 0 ? mrr / totalPayingClients : 0;
 
-      const churnRate = totalSubscriptions > 0
-        ? ((totalVencidos / totalSubscriptions) * 100)
+      // Inadimplência ≠ churn: taxa de inadimplência = vencidos/(pagos+vencidos)
+      const taxaInadimplencia = totalSubscriptions > 0
+        ? (totalVencidos / totalSubscriptions) * 100
         : 0;
+
+      // Churn de lojas no mês: clientes com assinatura CANCELADA com vencimento no mês corrente
+      const churnLojasMes = await prisma.subscription.count({
+        where: {
+          statusPagamento: 'CANCELADO',
+          dataVencimento: { gte: inicioMes, lte: fimMes },
+        },
+      });
+
+      // Receita pendente = PENDENTE + VENCIDO (o boleto vencido também é receita em aberto)
+      const receitaPendente = [...pendentes, ...vencidas].reduce(
+        (acc, s) => acc + Number(s.valorMensalidade), 0);
 
       const momGrowth = clientesMesPassado > 0
         ? ((novosClientesMes - clientesMesPassado) / clientesMesPassado) * 100
         : novosClientesMes > 0 ? 100 : 0;
 
-      const totalRevenue = receitaMeses.find(r => r.statusPagamento === 'PAGO')?._sum.valorMensalidade || 0;
-      const totalPending = receitaMeses.find(r => r.statusPagamento === 'PENDENTE')?._sum.valorMensalidade || 0;
+      // LTV: com base pequena é ruído estatístico — só exibir com amostra significativa
+      const ltv = totalPayingClients >= 30 && taxaInadimplencia > 0
+        ? arpu / (taxaInadimplencia / 100)
+        : null;
 
-      const ltv = churnRate > 0 ? arpu / (churnRate / 100) : arpu * 12;
-
+      // Evolução por mês: soma das mensalidades PAGO por mês de vencimento
+      const meses = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
       const receitasUltimosMeses: { mes: string; receita: number }[] = [];
       for (let i = 5; i >= 0; i--) {
         const d = new Date(hojeTz.getFullYear(), hojeTz.getMonth() - i, 1);
         const fim = new Date(hojeTz.getFullYear(), hojeTz.getMonth() - i + 1, 0, 23, 59, 59, 999);
-        const meses = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
         const mesLabel = `${meses[d.getMonth()]}/${String(d.getFullYear()).slice(2)}`;
 
         const agg = await prisma.subscription.aggregate({
           _sum: { valorMensalidade: true },
           where: {
             statusPagamento: 'PAGO',
-            createdAt: { lte: fim },
+            dataVencimento: { gte: d, lte: fim },
           },
         });
 
@@ -326,19 +338,30 @@ const despesasPeriodoAggregate = await prisma.financialTransaction.aggregate({
         });
       }
 
+      // Delta MRR: comparação entre os dois últimos meses com receita
+      let mrrDelta = 0;
+      const comReceita = receitasUltimosMeses.filter(m => m.receita > 0);
+      if (comReceita.length >= 2) {
+        const atual = comReceita[comReceita.length - 1].receita;
+        const anterior = comReceita[comReceita.length - 2].receita;
+        mrrDelta = anterior > 0 ? ((atual - anterior) / anterior) * 100 : 0;
+      }
+
       return res.status(200).json({
         totalLojas: totalStores,
         lojasAtivas: totalPayingClients,
         totalClientes: totalClients,
         totalUsuarios: totalUsers,
         mrr,
-        arpu,
-        ltv: Math.round(ltv * 100) / 100,
-        churnRate: Math.round(churnRate * 100) / 100,
+        arpu: Math.round(arpu * 100) / 100,
+        ltv,
+        churnRate: Math.round(taxaInadimplencia * 100) / 100,
         inadimplentes: totalVencidos,
         novosClientesMes,
         momGrowth: Math.round(momGrowth * 100) / 100,
-        receitaPendente: Number(totalPending),
+        receitaPendente: Math.round(receitaPendente * 100) / 100,
+        mrrDelta: Math.round(mrrDelta * 100) / 100,
+        churnLojasMes,
         receitaChart: receitasUltimosMeses,
       });
     } catch (error) {

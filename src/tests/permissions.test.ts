@@ -30,11 +30,11 @@ describe('requireStorePermission middleware', () => {
     // Criar loja e usuário de teste
     const hash = await bcrypt.hash('123456', 10);
     user = await prisma.user.create({
-      data: { nome: 'Test Vendedor', email: `vendedor_${Date.now()}@test.com`, senhaHash: hash, role: 'USER' }
+      data: { nome: 'Test Vendedor', email: `vendedor_${Date.now()}@lpzteste.app`, senhaHash: hash, role: 'USER' }
     });
 
     const client = await prisma.client.create({
-      data: { nomeCompleto: 'Test Client', email: `client_perm_${Date.now()}@test.com` }
+      data: { nomeCompleto: 'Test Client', email: `client_perm_${Date.now()}@lpzteste.app` }
     });
 
     const control = await prisma.control.create({

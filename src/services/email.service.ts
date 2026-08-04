@@ -13,7 +13,7 @@ interface SmtpConfig {
  * Remove caracteres perigosos para evitar XSS em templates de email.
  * Ex: <script>alert('xss')</script> → &lt;script&gt;alert('xss')&lt;/script&gt;
  */
-function escapeHtml(text: string): string {
+export function escapeHtml(text: string): string {
   return text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')

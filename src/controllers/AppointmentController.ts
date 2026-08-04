@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
+import { parseDate } from '../lib/dateUtils';
 
 export class AppointmentController {
   // ==================== PROFESSIONALS ====================
@@ -124,7 +125,7 @@ export class AppointmentController {
       const appointment = await prisma.appointment.create({
         data: {
           storeId, customerId, professionalId: professionalId || null,
-          data: new Date(data),
+          data: parseDate(data) || new Date(),
           duracaoMinutos: duracaoMinutos || 60,
           servico, observacoes, valorCobrado: valorCobrado || 0,
         },
@@ -154,7 +155,7 @@ export class AppointmentController {
         where: { id },
         data: {
           customerId, professionalId,
-          data: data ? new Date(data) : undefined,
+          data: data ? (parseDate(data) ?? undefined) : undefined,
           duracaoMinutos, servico, observacoes, valorCobrado,
         },
         include: {
