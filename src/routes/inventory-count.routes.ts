@@ -25,6 +25,10 @@ router.post('/:id/reconcile',
   requireStorePermission('gerenciar_estoque'),
   controller.reconcile.bind(controller)
 );
+router.post('/:id/items/by-ean',
+  requireStorePermission('gerenciar_estoque'),
+  controller.addItemByEan.bind(controller)
+);
 router.put('/items/:itemId',
   requireStorePermission('gerenciar_estoque'),
   controller.updateItem.bind(controller)

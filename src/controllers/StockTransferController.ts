@@ -1,9 +1,11 @@
 import { Request, Response } from 'express';
+import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
+import { asyncHandler } from "../lib/asyncHandler";
+import { StockMovementService } from '../services/StockMovementService';
 
 export class StockTransferController {
-  async list(req: Request, res: Response) {
-    try {
+  list = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
@@ -23,14 +25,10 @@ export class StockTransferController {
       });
 
       res.json(transfers);
-    } catch (error: any) {
-      console.error('Erro ao listar transferências:', error);
-      res.status(500).json({ message: error.message || 'Erro ao listar transferências' });
-    }
-  }
+    
+  }, "listar");
 
-  async create(req: Request, res: Response) {
-    try {
+  create = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       const userId = req.user?.id as string;
       if (!storeId || !userId) return res.status(401).json({ message: 'Usuário ou loja não identificados' });
@@ -43,7 +41,15 @@ export class StockTransferController {
         return res.status(400).json({ message: 'A loja de destino deve ser diferente da origem' });
       }
 
-      const destStore = await prisma.store.findFirst({ where: { id: destinationStoreId } });
+      const originStore = await prisma.store.findUnique({
+        where: { id: storeId },
+        select: { controlId: true },
+      });
+      if (!originStore) return res.status(401).json({ message: 'Loja de origem não encontrada' });
+
+      const destStore = await prisma.store.findFirst({
+        where: { id: destinationStoreId, controlId: originStore.controlId },
+      });
       if (!destStore) return res.status(404).json({ message: 'Loja de destino não encontrada' });
 
       for (const item of items) {
@@ -83,14 +89,10 @@ export class StockTransferController {
       });
 
       res.status(201).json(transfer);
-    } catch (error: any) {
-      console.error('Erro ao criar transferência:', error);
-      res.status(500).json({ message: error.message || 'Erro ao criar transferência' });
-    }
-  }
+    
+  }, "criar");
 
-  async receive(req: Request, res: Response) {
-    try {
+  receive = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       const userId = req.user?.id as string;
       if (!storeId || !userId) return res.status(401).json({ message: 'Usuário ou loja não identificados' });
@@ -108,35 +110,21 @@ export class StockTransferController {
 
       await prisma.$transaction(async (tx) => {
         for (const item of transfer.items) {
-          const product = await tx.product.findUnique({ where: { id: item.productId } });
-          if (!product) continue;
-
-          const qtdRecebida = Number(item.quantidade);
-          const saldoAnterior = Number(product.qtdEstoqueAtual);
-          const saldoPosterior = saldoAnterior + qtdRecebida;
-
-          await tx.product.update({
-            where: { id: item.productId },
-            data: { qtdEstoqueAtual: saldoPosterior },
+          const result = await StockMovementService.movimentar(tx, {
+            storeId,
+            productId: item.productId,
+            userId,
+            tipo: 'TRANSFERENCIA_DESTINO',
+            quantidade: Number(item.quantidade),
+            referenciaId: id,
+            observacao: `Recebido da transferência #${id.slice(0, 8)}`,
+            skipSeProdutoInexistente: true,
           });
-
-          await tx.stockMovement.create({
-            data: {
-              storeId,
-              productId: item.productId,
-              userId,
-              tipo: 'TRANSFERENCIA_DESTINO',
-              quantidade: qtdRecebida,
-              saldoAnterior,
-              saldoPosterior,
-              referenciaId: id,
-              observacao: `Recebido da transferência #${id.slice(0, 8)}`,
-            },
-          });
+          if (!result) continue;
 
           await tx.stockTransferItem.update({
             where: { id: item.id },
-            data: { quantidadeRecebida: qtdRecebida },
+            data: { quantidadeRecebida: Number(item.quantidade) },
           });
         }
 
@@ -147,14 +135,10 @@ export class StockTransferController {
       });
 
       res.json({ message: 'Transferência recebida com sucesso' });
-    } catch (error: any) {
-      console.error('Erro ao receber transferência:', error);
-      res.status(500).json({ message: error.message || 'Erro ao receber transferência' });
-    }
-  }
+    
+  }, "registrar recebimento");
 
-  async send(req: Request, res: Response) {
-    try {
+  send = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       const userId = req.user?.id as string;
       if (!storeId || !userId) return res.status(401).json({ message: 'Usuário ou loja não identificados' });
@@ -172,36 +156,16 @@ export class StockTransferController {
 
       await prisma.$transaction(async (tx) => {
         for (const item of transfer.items) {
-          const product = await tx.product.findFirst({
-            where: { id: item.productId, storeId },
+          const result = await StockMovementService.movimentar(tx, {
+            storeId,
+            productId: item.productId,
+            userId,
+            tipo: 'TRANSFERENCIA_ORIGEM',
+            quantidade: Number(item.quantidade),
+            referenciaId: id,
+            observacao: `Enviado para transferência #${id.slice(0, 8)}`,
           });
-          if (!product) continue;
-
-          const qtdSaida = Number(item.quantidade);
-          const saldoAnterior = Number(product.qtdEstoqueAtual);
-          if (saldoAnterior < qtdSaida) {
-            throw new Error(`Estoque insuficiente de ${product.nome}: disponível ${saldoAnterior}, enviando ${qtdSaida}`);
-          }
-          const saldoPosterior = saldoAnterior - qtdSaida;
-
-          await tx.product.update({
-            where: { id: item.productId },
-            data: { qtdEstoqueAtual: saldoPosterior },
-          });
-
-          await tx.stockMovement.create({
-            data: {
-              storeId,
-              productId: item.productId,
-              userId,
-              tipo: 'TRANSFERENCIA_ORIGEM',
-              quantidade: qtdSaida,
-              saldoAnterior,
-              saldoPosterior,
-              referenciaId: id,
-              observacao: `Enviado para transferência #${id.slice(0, 8)}`,
-            },
-          });
+          if (!result) continue;
         }
 
         await tx.stockTransfer.update({
@@ -211,14 +175,10 @@ export class StockTransferController {
       });
 
       res.json({ message: 'Transferência enviada com sucesso' });
-    } catch (error: any) {
-      console.error('Erro ao enviar transferência:', error);
-      res.status(500).json({ message: error.message || 'Erro ao enviar transferência' });
-    }
-  }
+    
+  }, "enviar");
 
-  async cancel(req: Request, res: Response) {
-    try {
+  cancel = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
@@ -238,9 +198,6 @@ export class StockTransferController {
       });
 
       res.json({ message: 'Transferência cancelada' });
-    } catch (error: any) {
-      console.error('Erro ao cancelar transferência:', error);
-      res.status(500).json({ message: error.message || 'Erro ao cancelar transferência' });
-    }
-  }
+    
+  }, "cancelar");
 }

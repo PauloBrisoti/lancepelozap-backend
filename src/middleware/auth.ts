@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { prisma } from "../lib/prisma";
+import { setContext } from "../lib/logger";
 import { startOfDay, differenceInCalendarDays } from "date-fns";
 import { getVarreduraConfig } from "../services/configuracaoFinanceira";
 
@@ -12,6 +13,7 @@ interface JwtPayload {
   tenant_id?: string;
   isImpersonating?: boolean;
   allowedStoreIds?: string[];
+  tv?: number;
 }
 
 declare global {
@@ -20,6 +22,56 @@ declare global {
       user?: JwtPayload;
     }
   }
+}
+
+// Inatividade máxima permitida por sessão (configurável). Padrão: 8h —
+// acima disso a sessão morre mesmo que o token (12h) ainda seja válido.
+// O token absoluto de 12h continua valendo como teto.
+const DEFAULT_IDLE_TIMEOUT_MS = 8 * 60 * 60 * 1000;
+// Janela de gravação de atividade: evita 1 UPDATE por request (só grava
+// quando a última marca tem mais de 10 minutos)
+const ACTIVITY_WRITE_WINDOW_MS = 10 * 60 * 1000;
+
+function getIdleTimeoutMs(): number {
+  const hours = Number(process.env.SESSION_IDLE_TIMEOUT_HOURS);
+  if (Number.isFinite(hours) && hours > 0) return hours * 60 * 60 * 1000;
+  return DEFAULT_IDLE_TIMEOUT_MS;
+}
+
+async function validateSessionState(payload: { id: string; tv?: number }) {
+  const user = await prisma.user.findUnique({
+    where: { id: payload.id },
+    select: { ativo: true, tokenVersion: true, lastActivityAt: true }
+  });
+  if (!user) {
+    return { error: "Sessão expirada. Faça login novamente.", status: 401 };
+  }
+  if (!user.ativo) {
+    return { error: "Sua conta foi arquivada. Contate o suporte.", status: 403 };
+  }
+  if (payload.tv !== user.tokenVersion) {
+    return { error: "Sessão expirada. Faça login novamente.", status: 403 };
+  }
+  if (user.lastActivityAt) {
+    const idleMs = Date.now() - user.lastActivityAt.getTime();
+    if (idleMs > getIdleTimeoutMs()) {
+      return { error: "Sessão expirada por inatividade. Faça login novamente.", status: 403 };
+    }
+  }
+
+  // Registra atividade com janela de 10 min (fire-and-forget, não bloqueia o request)
+  prisma.user.updateMany({
+    where: {
+      id: payload.id,
+      OR: [
+        { lastActivityAt: null },
+        { lastActivityAt: { lt: new Date(Date.now() - ACTIVITY_WRITE_WINDOW_MS) } },
+      ],
+    },
+    data: { lastActivityAt: new Date() },
+  }).catch(() => {});
+
+  return null;
 }
 
 export async function requireAuth(req: Request, res: Response, next: NextFunction) {
@@ -34,8 +86,13 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     try {
       const payload = jwt.verify(req.cookies.adminToken, JWT_SECRET) as JwtPayload;
       if (payload.role === "SUPER_ADMIN") {
-        req.user = payload;
-        return next();
+        const sessionError = await validateSessionState(payload);
+        if (sessionError) {
+          return res.status(sessionError.status).json({ error: sessionError.error });
+        }
+      req.user = payload;
+      setContext({ userId: payload.id, storeId: payload.storeId, role: payload.role });
+      return next();
       }
     } catch {
       // adminToken inválido/expirado — continua para authToken
@@ -65,8 +122,24 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
 
       req.user = payload;
 
-      if (payload.role === "SUPER_ADMIN" || payload.isImpersonating) {
+      // Impersonação: o token herda o `id` do impersonador — revalida a sessão
+      // dele por request (ativo, tokenVersion, idle), evitando token de 24h
+      // que sobrevive a desativação/reset de senha do admin.
+      if (payload.isImpersonating) {
+        const sessionError = await validateSessionState(payload);
+        if (sessionError) {
+          return res.status(sessionError.status).json({ error: sessionError.error });
+        }
         return next();
+      }
+
+      if (payload.role === "SUPER_ADMIN") {
+        return next();
+      }
+
+      const sessionError = await validateSessionState(payload);
+      if (sessionError) {
+        return res.status(sessionError.status).json({ error: sessionError.error });
       }
 
       if (await checkActiveSubscription(payload.clientId, payload.storeId, payload.allowedStoreIds)) {

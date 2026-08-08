@@ -1,12 +1,24 @@
 import { Request, Response } from 'express';
+import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
+import { asyncHandler } from "../lib/asyncHandler";
 import { sendWhatsApp } from '../services/whatsapp.service';
+
+// Máscara de chave: exibe apenas o início/fim (ex.: abcd****wxyz)
+function maskSecret(secret?: string | null): string {
+  if (!secret) return '';
+  if (secret.length <= 8) return '****';
+  return `${secret.slice(0, 4)}****${secret.slice(-4)}`;
+}
+
+function isMasked(value?: string | null): boolean {
+  return !!value && value.includes('****');
+}
 
 export class WhatsAppController {
   // ==================== CONFIG ====================
 
-  async getConfig(req: Request, res: Response) {
-    try {
+  getConfig = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       const store = await prisma.store.findUnique({
         where: { id: storeId },
@@ -17,14 +29,14 @@ export class WhatsAppController {
           whatsappSendMarketing: true,
         },
       });
-      res.json(store || {});
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
-    }
-  }
+      res.json({
+        ...store,
+        whatsappApiKey: maskSecret(store?.whatsappApiKey),
+      });
+    
+  }, "obter config");
 
-  async updateConfig(req: Request, res: Response) {
-    try {
+  updateConfig = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       const {
         whatsappApiUrl, whatsappApiKey, whatsappEnabled,
@@ -32,10 +44,18 @@ export class WhatsAppController {
         whatsappSendBirthday, whatsappSendMarketing,
       } = req.body;
 
+      // Se veio mascarado ou vazio, mantém a chave existente
+      let chaveFinal = whatsappApiKey;
+      if (!whatsappApiKey || isMasked(whatsappApiKey)) {
+        const store = await prisma.store.findUnique({ where: { id: storeId }, select: { whatsappApiKey: true } });
+        chaveFinal = store?.whatsappApiKey || null;
+      }
+
       const updated = await prisma.store.update({
         where: { id: storeId },
         data: {
-          whatsappApiUrl, whatsappApiKey,
+          whatsappApiUrl,
+          whatsappApiKey: chaveFinal,
           whatsappEnabled: whatsappEnabled ?? false,
           whatsappSendConfirmation: whatsappSendConfirmation ?? false,
           whatsappSendReminder: whatsappSendReminder ?? false,
@@ -50,13 +70,10 @@ export class WhatsAppController {
       });
 
       res.json(updated);
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
-    }
-  }
+    
+  }, "atualizar config");
 
-  async testConnection(req: Request, res: Response) {
-    try {
+  testConnection = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       const store = await prisma.store.findUnique({ where: { id: storeId } });
       if (!store?.whatsappApiUrl) {
@@ -71,15 +88,12 @@ export class WhatsAppController {
       });
 
       res.json(result);
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
-    }
-  }
+    
+  }, "test connection");
 
   // ==================== QR CODE ====================
 
-  async getQRCode(req: Request, res: Response) {
-    try {
+  getQRCode = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       const store = await prisma.store.findUnique({ where: { id: storeId } });
       const apiUrl = store?.whatsappApiUrl;
@@ -99,7 +113,9 @@ export class WhatsAppController {
       // 1. Logout to reset state
       await fetch(`${baseUrl}/instance/logout/${instanceName}`, {
         method: 'DELETE', headers,
-      }).catch(() => {});
+      }).catch((e) => {
+        logger.warn("Falha ao deslogar instância WhatsApp (reset)", { err: e, action: "whatsapp_instance_logout" });
+      });
 
       // 2. Small delay for reset
       await new Promise(r => setTimeout(r, 1000));
@@ -144,14 +160,10 @@ export class WhatsAppController {
       }
 
       return res.status(408).json({ error: 'Tempo limite excedido para gerar QR Code. Acesse o Manager manualmente.' });
-    } catch (error: any) {
-      console.error('Erro ao gerar QR Code:', error);
-      return res.status(500).json({ error: error.message });
-    }
-  }
+    
+  }, "obter qr code");
 
-  async getQRCodeStatus(req: Request, res: Response) {
-    try {
+  getQRCodeStatus = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       const store = await prisma.store.findUnique({ where: { id: storeId } });
       const apiUrl = store?.whatsappApiUrl;
@@ -175,15 +187,12 @@ export class WhatsAppController {
         number: stateData?.instance?.number || null,
         profileName: stateData?.instance?.profileName || null,
       });
-    } catch (error: any) {
-      return res.status(500).json({ error: error.message });
-    }
-  }
+    
+  }, "obter qr code status");
 
   // ==================== SEND ====================
 
-  async sendMessage(req: Request, res: Response) {
-    try {
+  sendMessage = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       const { customerId, message } = req.body;
       if (!customerId || !message) {
@@ -222,13 +231,10 @@ export class WhatsAppController {
       });
 
       res.json({ sent: result.success, error: result.error });
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
-    }
-  }
+    
+  }, "enviar message");
 
-  async sendPortalLink(req: Request, res: Response) {
-    try {
+  sendPortalLink = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       const { customerId } = req.body;
       if (!customerId) return res.status(400).json({ error: 'customerId obrigatório' });
@@ -273,28 +279,22 @@ export class WhatsAppController {
       });
 
       res.json({ sent: result.success, error: result.error, portalUrl });
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
-    }
-  }
+    
+  }, "enviar portal do cliente link");
 
   // ==================== TEMPLATES ====================
 
-  async listTemplates(req: Request, res: Response) {
-    try {
+  listTemplates = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       const templates = await prisma.whatsAppTemplate.findMany({
         where: { storeId },
         orderBy: { nome: 'asc' },
       });
       res.json(templates);
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
-    }
-  }
+    
+  }, "listar templates");
 
-  async createTemplate(req: Request, res: Response) {
-    try {
+  createTemplate = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       const { nome, categoria, conteudo } = req.body;
       if (!nome || !conteudo) {
@@ -306,13 +306,10 @@ export class WhatsAppController {
       });
 
       res.status(201).json(template);
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
-    }
-  }
+    
+  }, "criar template");
 
-  async updateTemplate(req: Request, res: Response) {
-    try {
+  updateTemplate = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       const id = req.params.id as string;
       const { nome, categoria, conteudo, ativo } = req.body;
@@ -326,13 +323,10 @@ export class WhatsAppController {
       });
 
       res.json(updated);
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
-    }
-  }
+    
+  }, "atualizar template");
 
-  async deleteTemplate(req: Request, res: Response) {
-    try {
+  deleteTemplate = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       const id = req.params.id as string;
 
@@ -341,15 +335,12 @@ export class WhatsAppController {
 
       await prisma.whatsAppTemplate.delete({ where: { id } });
       res.json({ message: 'Template excluído' });
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
-    }
-  }
+    
+  }, "excluir template");
 
   // ==================== LOGS ====================
 
-  async listLogs(req: Request, res: Response) {
-    try {
+  listLogs = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       const { limit = '50', offset = '0', customerId } = req.query;
       const where: any = { storeId };
@@ -364,15 +355,12 @@ export class WhatsAppController {
       });
 
       res.json(logs);
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
-    }
-  }
+    
+  }, "listar logs");
 
   // ==================== CAMPANHA ====================
 
-  async sendCampaign(req: Request, res: Response) {
-    try {
+  sendCampaign = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       const { customerIds, message } = req.body;
       if (!customerIds?.length || !message) {
@@ -419,8 +407,6 @@ export class WhatsAppController {
       }
 
       res.json({ total: customers.length, enviados: results.filter(r => r.sent).length, erros: results.filter(r => !r.sent).length, results });
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
-    }
-  }
+    
+  }, "enviar campaign");
 }

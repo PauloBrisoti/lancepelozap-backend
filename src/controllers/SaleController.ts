@@ -1,4 +1,6 @@
 import { Request, Response } from "express";
+import { logger } from '../lib/logger';
+import { asyncHandler } from "../lib/asyncHandler";
 import { randomUUID } from "crypto";
 import jwt from "jsonwebtoken";
 import { prisma } from "../lib/prisma";
@@ -9,49 +11,55 @@ import { comparePassword } from "../utils/password";
 import { buildDateRange, parseDate } from "../lib/dateUtils";
 
 export class SaleController {
-  async summary(req: Request, res: Response) {
-    try {
-      const storeId = req.user?.storeId || (req.user as any)?.tenant_id;
-      if (!storeId) {
-        return res.status(401).json({ message: "Tenant ID não encontrado no token" });
-      }
-
-      const { startDate, endDate, prevStartDate, prevEndDate } = req.query;
-
-      const summarize = async (s: string, e: string) => {
-        const { firstDay, lastDay } = buildDateRange(s, e);
-        const sales = await prisma.sale.findMany({
-          where: {
-            storeId,
-            status: { not: 'CANCELADA' },
-            dataVenda: { gte: firstDay, lte: lastDay },
-          },
-          select: {
-            valorTotalLiquido: true,
-            saleItems: { select: { quantidade: true } },
-          },
-        });
-        const valor = sales.reduce((acc, x) => acc + Number(x.valorTotalLiquido), 0);
-        const itens = sales.reduce((acc, x) => acc + x.saleItems.reduce((b, i) => b + Number(i.quantidade), 0), 0);
-        return {
-          total: sales.length,
-          valor,
-          ticketMedio: sales.length ? valor / sales.length : 0,
-          itens,
-        };
-      };
-
-      const current = await summarize(startDate as string, endDate as string);
-      const previous = prevStartDate && prevEndDate
-        ? await summarize(prevStartDate as string, prevEndDate as string)
-        : null;
-
-      res.json({ current, previous });
-    } catch (error) {
-      console.error('Erro ao gerar resumo de vendas:', error);
-      res.status(500).json({ message: 'Erro interno ao calcular resumo de vendas.' });
+  summary = asyncHandler(async (req: Request, res: Response) => {
+    const storeId = req.user?.storeId || (req.user as any)?.tenant_id;
+    if (!storeId) {
+      return res.status(401).json({ message: "Tenant ID não encontrado no token" });
     }
-  }
+
+    const { startDate, endDate, prevStartDate, prevEndDate } = req.query;
+
+    // VENDEDOR/CAIXA vê apenas as próprias vendas
+    const requesterId = req.user?.id;
+    const access = requesterId
+      ? await prisma.storeUserAccess.findUnique({
+          where: { storeId_userId: { storeId, userId: requesterId } },
+          select: { role: true }
+        })
+      : null;
+    const restricted = !!access && (access.role === 'VENDEDOR' || access.role === 'CAIXA');
+
+    const summarize = async (s: string, e: string) => {
+      const { firstDay, lastDay } = buildDateRange(s, e);
+      const sales = await prisma.sale.findMany({
+        where: {
+          storeId,
+          status: { not: 'CANCELADA' },
+          dataVenda: { gte: firstDay, lte: lastDay },
+          ...(restricted ? { userId: requesterId! } : {}),
+        },
+        select: {
+          valorTotalLiquido: true,
+          saleItems: { select: { quantidade: true } },
+        },
+      });
+      const valor = sales.reduce((acc, x) => acc + Number(x.valorTotalLiquido), 0);
+      const itens = sales.reduce((acc, x) => acc + x.saleItems.reduce((b, i) => b + Number(i.quantidade), 0), 0);
+      return {
+        total: sales.length,
+        valor,
+        ticketMedio: sales.length ? valor / sales.length : 0,
+        itens,
+      };
+    };
+
+    const current = await summarize(startDate as string, endDate as string);
+    const previous = prevStartDate && prevEndDate
+      ? await summarize(prevStartDate as string, prevEndDate as string)
+      : null;
+
+    res.json({ current, previous });
+  }, "gerar resumo de vendas");
 
   async list(req: Request, res: Response) {
     try {
@@ -62,6 +70,17 @@ export class SaleController {
 
       const { startDate, endDate } = req.query;
       const whereClause: any = { storeId };
+
+      // VENDEDOR/CAIXA vê apenas as próprias vendas
+      const requesterId = req.user?.id;
+      const access = requesterId
+        ? await prisma.storeUserAccess.findUnique({
+            where: { storeId_userId: { storeId, userId: requesterId } },
+            select: { role: true }
+          })
+        : null;
+      const restricted = !!access && (access.role === 'VENDEDOR' || access.role === 'CAIXA');
+      if (restricted) whereClause.userId = requesterId;
 
       if (startDate && endDate) {
         const { firstDay, lastDay } = buildDateRange(startDate as string, endDate as string);
@@ -124,21 +143,28 @@ export class SaleController {
           };
         });
 
+        // VENDEDOR/CAIXA não vê custo nem margens nas vendas
+        const items = (s.saleItems || []).map((i: any) => ({
+          ...i,
+          product: i.product ? { ...i.product, precoCusto: restricted ? 0 : i.product.precoCusto } : null,
+        }));
+
         return {
           ...s,
+          saleItems: items,
           receivables: enrichedReceivables,
           valorTaxasGateway: valorTaxas,
-          cmvTotal,
-          margemBruta: Math.round(margemBruta * 100) / 100,
-          margemLiquida: Math.round(margemLiquida * 100) / 100,
-          margemBrutaValor: valorBruto - cmvTotal,
-          margemLiquidaValor: valorLiquido - cmvTotal,
+          cmvTotal: restricted ? 0 : cmvTotal,
+          margemBruta: restricted ? 0 : Math.round(margemBruta * 100) / 100,
+          margemLiquida: restricted ? 0 : Math.round(margemLiquida * 100) / 100,
+          margemBrutaValor: restricted ? 0 : valorBruto - cmvTotal,
+          margemLiquidaValor: restricted ? 0 : valorLiquido - cmvTotal,
         };
       });
 
       res.json(salesWithMargins);
     } catch (error: any) {
-      console.error("Erro ao listar vendas:", error);
+      logger.error("Erro ao listar vendas:", error);
       res.status(500).json({ message: "Erro interno do servidor", detail: error.message });
     }
   }
@@ -171,6 +197,17 @@ export class SaleController {
 
       if (formaPagamento === 'CREDIARIO' && !customerId) {
         return res.status(400).json({ message: "Cliente é obrigatório para vendas no Crediário" });
+      }
+
+      // OWNERSHIP: cliente informado precisa pertencer a ESTA loja
+      if (customerId) {
+        const ownedCustomer = await prisma.customer.findFirst({
+          where: { id: customerId, storeId },
+          select: { id: true },
+        });
+        if (!ownedCustomer) {
+          return res.status(400).json({ message: "Cliente não encontrado nesta loja" });
+        }
       }
 
       // Resolve cash register
@@ -331,7 +368,7 @@ export class SaleController {
         // 5. Generate Receivables for Crediario
         if (formaPagamento === 'CREDIARIO' && customerId) {
           const valorRestante = Math.round((valorTotalLiquido - Number(valorSinal)) * 100) / 100;
-          console.log('[DEBUG crediario] PASSOU NO CHECK, valorRestante:', valorRestante);
+          logger.debug('[DEBUG crediario] PASSOU NO CHECK, valorRestante:', { arg0: valorRestante });
           if (valorRestante > 0) {
             const numParcelas = Number(numeroParcelas) || 1;
             const parcelaBase = Math.round((valorRestante / numParcelas) * 100) / 100;
@@ -399,7 +436,7 @@ export class SaleController {
           // Cria a transação
           let customerName = 'Balcão';
           if (customerId) {
-            const customer = await tx.customer.findUnique({ where: { id: customerId } });
+            const customer = await tx.customer.findFirst({ where: { id: customerId, storeId } });
             if (customer) customerName = customer.nomeCompleto;
           }
 
@@ -458,8 +495,8 @@ export class SaleController {
             const gateways = setting.valor as any;
             if (!gateways.whatsappApiUrl || !gateways.whatsappApiToken) return;
 
-            const customer = await prisma.customer.findUnique({
-              where: { id: customerId },
+            const customer = await prisma.customer.findFirst({
+              where: { id: customerId, storeId },
               select: { nomeCompleto: true, telefoneWhatsapp: true },
             });
             if (!customer?.telefoneWhatsapp) return;
@@ -497,7 +534,7 @@ export class SaleController {
         })();
       }
     } catch (error: any) {
-      console.error("Erro ao criar venda:", error);
+      logger.error("Erro ao criar venda:", error);
       res.status(400).json({ message: error.message || "Erro ao processar a venda" });
     }
   }
@@ -517,6 +554,29 @@ export class SaleController {
 
       if (!sale) return res.status(404).json({ message: "Venda não encontrada" });
       if (sale.status === 'CANCELADA') return res.status(400).json({ message: "Venda cancelada não pode ser editada" });
+
+      // OWNERSHIP: cliente informado precisa pertencer a ESTA loja
+      if (req.body.customerId) {
+        const ownedCustomer = await prisma.customer.findFirst({
+          where: { id: req.body.customerId, storeId },
+          select: { id: true },
+        });
+        if (!ownedCustomer) {
+          return res.status(400).json({ message: "Cliente não encontrado nesta loja" });
+        }
+      }
+
+      // VENDEDOR/CAIXA só edita as próprias vendas
+      const requesterId = req.user?.id;
+      if (requesterId) {
+        const access = await prisma.storeUserAccess.findUnique({
+          where: { storeId_userId: { storeId, userId: requesterId } },
+          select: { role: true }
+        });
+        if (access && (access.role === 'VENDEDOR' || access.role === 'CAIXA') && sale.userId !== requesterId) {
+          return res.status(403).json({ message: "Você só pode editar as próprias vendas" });
+        }
+      }
 
       await prisma.$transaction(async (tx) => {
         const updateData: any = {};
@@ -646,7 +706,7 @@ export class SaleController {
               if (!wallet) {
                 wallet = await tx.wallet.create({ data: { storeId, nome: 'Caixa Interno', tipo: 'EMPRESA', saldoAtual: 0 } });
               }
-              const customer = customerIdFinal ? await tx.customer.findUnique({ where: { id: customerIdFinal } }) : null;
+              const customer = customerIdFinal ? await tx.customer.findFirst({ where: { id: customerIdFinal, storeId } }) : null;
               const sinalFinalRounded = Math.round(sinalFinal * 100) / 100;
               await tx.financialTransaction.create({
                 data: {
@@ -692,7 +752,7 @@ export class SaleController {
                 wallet = await tx.wallet.create({ data: { storeId, nome: 'Caixa Interno', tipo: 'EMPRESA', saldoAtual: 0 } });
               }
               const customerIdFinal = customerId ?? sale.customerId;
-              const customer = customerIdFinal ? await tx.customer.findUnique({ where: { id: customerIdFinal } }) : null;
+              const customer = customerIdFinal ? await tx.customer.findFirst({ where: { id: customerIdFinal, storeId } }) : null;
               const liquidoFinalRounded = Math.round(liquidoFinal * 100) / 100;
               await tx.financialTransaction.create({
                 data: {
@@ -728,7 +788,7 @@ export class SaleController {
 
       res.json({ message: "Venda atualizada com sucesso", sale: updated });
     } catch (error: any) {
-      console.error("Erro ao atualizar venda:", error);
+      logger.error("Erro ao atualizar venda:", error);
       res.status(500).json({ message: error.message || "Erro ao atualizar venda" });
     }
   }
@@ -759,35 +819,29 @@ export class SaleController {
         return res.status(400).json({ message: "Venda já está cancelada" });
       }
 
+      // VENDEDOR/CAIXA só cancela as próprias vendas
+      const requesterId = req.user?.id;
+      if (requesterId) {
+        const access = await prisma.storeUserAccess.findUnique({
+          where: { storeId_userId: { storeId, userId: requesterId } },
+          select: { role: true }
+        });
+        if (access && (access.role === 'VENDEDOR' || access.role === 'CAIXA') && sale.userId !== requesterId) {
+          return res.status(403).json({ message: "Você só pode cancelar as próprias vendas" });
+        }
+      }
+
       const result = await prisma.$transaction(async (tx) => {
         // 1. Reverter estoque
         for (const item of sale.saleItems) {
-          const product = await tx.product.findUnique({
-            where: { id: item.productId }
-          });
-          const qtdAnterior = Number(product?.qtdEstoqueAtual || 0);
-
-          await tx.product.update({
-            where: { id: item.productId },
-            data: {
-              qtdEstoqueAtual: {
-                increment: item.quantidade
-              }
-            }
-          });
-
-          await tx.stockMovement.create({
-            data: {
-              storeId: sale.storeId,
-              productId: item.productId,
-              userId: req.user!.id,
-              tipo: 'ENTRADA',
-              quantidade: Number(item.quantidade),
-              saldoAnterior: qtdAnterior,
-              saldoPosterior: qtdAnterior + Number(item.quantidade),
-              referenciaId: sale.id,
-              observacao: `Estorno de cancelamento`,
-            },
+          await StockMovementService.movimentar(tx, {
+            storeId: sale.storeId,
+            productId: item.productId,
+            userId: req.user!.id,
+            tipo: 'ENTRADA',
+            quantidade: Number(item.quantidade),
+            referenciaId: sale.id,
+            observacao: `Estorno de cancelamento`,
           });
         }
 
@@ -851,7 +905,7 @@ export class SaleController {
 
       res.json({ message: "Venda cancelada com sucesso", sale: result });
     } catch (error: any) {
-      console.error("Erro ao cancelar venda:", error);
+      logger.error("Erro ao cancelar venda:", error);
       res.status(500).json({ message: "Erro interno do servidor", detail: error.message });
     }
   }
@@ -889,7 +943,7 @@ export class SaleController {
       );
       res.json({ token, expiresIn: 120 });
     } catch (error: any) {
-      console.error("Erro ao gerar token de exclusão:", error);
+      logger.error("Erro ao gerar token de exclusão:", error);
       res.status(500).json({ message: "Erro interno do servidor", detail: error.message });
     }
   }
@@ -944,24 +998,14 @@ export class SaleController {
       await prisma.$transaction(async (tx) => {
         // 1. Revert stock
         for (const item of sale.saleItems) {
-          const product = await tx.product.findUnique({ where: { id: item.productId } });
-          const qtdAnterior = Number(product?.qtdEstoqueAtual || 0);
-          await tx.product.update({
-            where: { id: item.productId },
-            data: { qtdEstoqueAtual: { increment: item.quantidade } },
-          });
-          await tx.stockMovement.create({
-            data: {
-              storeId: sale.storeId,
-              productId: item.productId,
-              userId: req.user!.id,
-              tipo: 'ENTRADA',
-              quantidade: Number(item.quantidade),
-              saldoAnterior: qtdAnterior,
-              saldoPosterior: qtdAnterior + Number(item.quantidade),
-              referenciaId: sale.id,
-              observacao: 'Estorno exclusão de venda',
-            },
+          await StockMovementService.movimentar(tx, {
+            storeId: sale.storeId,
+            productId: item.productId,
+            userId: req.user!.id,
+            tipo: 'ENTRADA',
+            quantidade: Number(item.quantidade),
+            referenciaId: sale.id,
+            observacao: 'Estorno exclusão de venda',
           });
         }
 
@@ -1000,7 +1044,7 @@ export class SaleController {
 
       res.json({ message: "Venda excluída permanentemente" });
     } catch (error: any) {
-      console.error("Erro ao excluir venda:", error);
+      logger.error("Erro ao excluir venda:", error);
       res.status(500).json({ message: "Erro interno do servidor", detail: error.message });
     }
   }

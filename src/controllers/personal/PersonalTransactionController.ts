@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { logger } from '../../lib/logger';
 import { prisma } from '../../lib/prisma';
 import { ensureCategories, ensureWallets, getCycleRange, getEffectiveUserId } from './helpers';
 
@@ -31,11 +32,11 @@ export class PersonalTransactionController {
         orderBy: { data: 'desc' },
       });
 
-      transactions.forEach(t => console.log('LIST', t.id.slice(0, 8), '| data:', t.data instanceof Date ? t.data.toISOString() : t.data, '| raw:', t.data));
+      transactions.forEach(t => logger.debug('LIST', { arg0: t.id.slice(0, 8), arg1: '| data:', arg2: t.data instanceof Date ? t.data.toISOString() : t.data, arg3: '| raw:', arg4: t.data }));
 
       return res.json(transactions);
     } catch (error) {
-      console.error('Erro ao listar transações PF:', error);
+      logger.error('Erro ao listar transações PF:', error);
       return res.status(500).json({ error: 'Erro interno' });
     }
   }
@@ -48,7 +49,7 @@ export class PersonalTransactionController {
 
       const { categoryId, walletId, tipo, valor, descricao, data, dataTransacao, dataVencimento, dataCompetencia, recorrente, parcelas, observacoes, pago, formaPagamento } = req.body;
 
-      console.log('Payload recebido:', req.body);
+      logger.debug('Payload recebido:', { arg0: req.body });
 
       if (!categoryId || !tipo || !valor) {
         return res.status(400).json({ error: 'categoryId, tipo e valor são obrigatórios' });
@@ -80,7 +81,7 @@ export class PersonalTransactionController {
 
       return res.status(201).json(transaction);
     } catch (error: any) {
-      console.error('Erro ao criar transação PF:', error?.message || error);
+      logger.error('Erro ao criar transação PF:', { err: error?.message || error });
       return res.status(400).json({ error: error?.message || 'Erro interno' });
     }
   }
@@ -95,8 +96,6 @@ export class PersonalTransactionController {
       if (!existing) return res.status(404).json({ error: 'Transação não encontrada' });
 
       const { categoryId, walletId, tipo, valor, descricao, data, dataTransacao, dataVencimento, dataCompetencia, recorrente, parcelas, observacoes, pago, formaPagamento } = req.body;
-      console.log('UPDATE tx', id, '| dataVencimento:', dataVencimento, '| dataTransacao:', dataTransacao, '| dataCompetencia:', dataCompetencia, '| data:', data);
-      console.log('UPDATE converted:', new Date(dataVencimento).toISOString());
       const transaction = await prisma.personalTransaction.update({
         where: { id },
         data: {
@@ -123,7 +122,7 @@ export class PersonalTransactionController {
 
       return res.json(transaction);
     } catch (error) {
-      console.error('Erro ao atualizar transação PF:', error);
+      logger.error('Erro ao atualizar transação PF:', error);
       return res.status(500).json({ error: 'Erro interno' });
     }
   }
@@ -140,7 +139,7 @@ export class PersonalTransactionController {
       await prisma.personalTransaction.delete({ where: { id } });
       return res.status(204).send();
     } catch (error) {
-      console.error('Erro ao deletar transação PF:', error);
+      logger.error('Erro ao deletar transação PF:', error);
       return res.status(500).json({ error: 'Erro interno' });
     }
   }

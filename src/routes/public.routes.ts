@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 
 const router = Router();
@@ -11,7 +12,7 @@ router.get('/plans', async (_req: Request, res: Response) => {
     });
     return res.json(plans);
   } catch (error) {
-    console.error('Erro ao listar planos públicos:', error);
+    logger.error('Erro ao listar planos públicos:', error);
     return res.status(500).json({ error: 'Erro ao carregar planos' });
   }
 });

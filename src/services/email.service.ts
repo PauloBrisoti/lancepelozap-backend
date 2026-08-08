@@ -1,4 +1,5 @@
 import nodemailer from 'nodemailer';
+import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 
 interface SmtpConfig {
@@ -56,7 +57,7 @@ export async function sendEmail(
     });
     return true;
   } catch (error: any) {
-    console.error('[EMAIL] Falha ao enviar para', to, error.message);
+    logger.error('[EMAIL] Falha ao enviar para', { err: to, message: error.message });
     throw new Error(`Falha ao enviar email: ${error.message}`);
   }
 }
@@ -78,7 +79,27 @@ export async function sendPasswordReset(email: string, resetLink: string): Promi
         Redefinir Senha
       </a>
       <p style="color:#6b7280;font-size:12px">Se não foi você, ignore este email. Sua conta está segura.</p>
-      <p style="color:#6b7280;font-size:12px">Este link expira em 1 hora.</p>
+      <p style="color:#6b7280;font-size:12px">Este link expira em 30 minutos.</p>
+    </div>`
+  );
+}
+
+/**
+ * Email de confirmação de e-mail (anti-enumeração: só é enviado quando
+ * o endereço realmente pertence ao cadastro self-service).
+ */
+export async function sendVerificationEmail(email: string, verifyLink: string): Promise<boolean> {
+  const link = escapeHtml(verifyLink);
+  return sendEmail(
+    email,
+    'Confirme seu e-mail - Lance Pelo Zap',
+    `<div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px">
+      <h2 style="color:#059669">Confirme seu e-mail</h2>
+      <p>Para liberar o acesso à sua conta, confirme seu endereço de e-mail:</p>
+      <a href="${link}" style="display:inline-block;background:#059669;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;margin:16px 0">
+        Confirmar E-mail
+      </a>
+      <p style="color:#6b7280;font-size:12px">Este link expira em 48 horas.</p>
     </div>`
   );
 }

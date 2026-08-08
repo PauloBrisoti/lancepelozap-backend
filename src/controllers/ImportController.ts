@@ -1,15 +1,19 @@
 import { Request, Response } from 'express';
+import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 import fs from 'fs';
+import { asyncHandler } from "../lib/asyncHandler";
 import ExcelJS from 'exceljs';
 
 export class ImportController {
   
   // POST /api/import/csv/clientes
-  async importCustomers(req: Request, res: Response) {
+  importCustomers = asyncHandler(async (req: Request, res: Response) => {
+
     try {
       let storeId = (req.user?.storeId as string || '').trim();
-      const logStr = `[${new Date().toISOString()}] IMPORT CUSTOMERS\nreq.user: ${JSON.stringify(req.user)}\nstoreId: "${storeId}"\nx-store-id: "${req.headers['x-store-id']}"\n`;
+      // LGPD: NÃO logar req.user inteiro nem dados pessoais — só identificadores técnicos
+      const logStr = `[${new Date().toISOString()}] IMPORT CUSTOMERS\nstoreId: "${storeId}"\nx-store-id: "${req.headers['x-store-id']}"\n`;
       fs.appendFileSync('imports.log', logStr);
       
       if (!storeId || storeId === 'null' || storeId === 'undefined') {
@@ -152,25 +156,26 @@ export class ImportController {
         errorCount 
       });
     } catch (error: any) {
-      console.error(error);
-      fs.appendFileSync('imports.log', `[FATAL ERROR CUSTOMERS] ${error.message}\n${error.stack}\n`);
+      logger.error('imports.log', { err: `[FATAL ERROR CUSTOMERS] ${error.message}\n${error.stack}\n` });
       if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
-      return res.status(400).json({ error: error.message || 'Formato de arquivo inválido. Tente enviar novamente como .xlsx ou .csv' });
+      return res.status(400).json({ error: '' });
     }
-  }
+  }, "importar clientes");
 
   // POST /api/import/csv/produtos
-  async importProducts(req: Request, res: Response) {
+  importProducts = asyncHandler(async (req: Request, res: Response) => {
+
     try {
       let storeId = (req.user?.storeId as string || '').trim();
-      const logStr = `[${new Date().toISOString()}] IMPORT PRODUCTS\nreq.user: ${JSON.stringify(req.user)}\nstoreId: "${storeId}"\nx-store-id: "${req.headers['x-store-id']}"\n`;
+      // LGPD: NÃO logar req.user inteiro nem dados pessoais — só identificadores técnicos
+      const logStr = `[${new Date().toISOString()}] IMPORT PRODUCTS\nstoreId: "${storeId}"\nx-store-id: "${req.headers['x-store-id']}"\n`;
       fs.appendFileSync('imports.log', logStr);
       
       if (!storeId || storeId === 'null' || storeId === 'undefined') {
         return res.status(403).json({ error: 'Acesso negado: loja não identificada ou inválida.' });
       }
 
-      console.log(`Executing prisma.store.findUnique for ID: "${storeId}" (length: ${storeId.length})`);
+      logger.debug(`Executing prisma.store.findUnique for ID: "${storeId}" (length: ${storeId.length})`);
       // Check if store actually exists to prevent Foreign Key errors
       const storeExists = await prisma.store.findUnique({ where: { id: storeId } });
       fs.appendFileSync('imports.log', `[PRODUCTS] storeExists result for ${storeId}: ${storeExists ? storeExists.id : 'null'}\n`);
@@ -272,8 +277,8 @@ export class ImportController {
         results.push(rowObj);
       });
 
-      console.log("Results parsed from file:", results.length);
-      console.log("First row:", results[0]);
+      logger.debug("Results parsed from file:", { arg0: results.length });
+      logger.debug("First row:", { arg0: results[0] });
 
       for (const row of results) {
         try {
@@ -316,8 +321,6 @@ export class ImportController {
           }
 
           if (!nome || !precoVendaStr) {
-            console.log("Missing fields:", { nome, precoVendaStr });
-            fs.appendFileSync('imports.log', `[ROW SKIP] Missing required fields. Nome: "${nome}", PrecoVenda: "${precoVendaStr}"\n`);
             errorCount++;
             continue;
           }
@@ -348,7 +351,7 @@ export class ImportController {
           });
           successCount++;
         } catch (e) {
-          console.error("Error creating product:", e);
+          logger.error("Error creating product:", e);
           errorCount++;
         }
       }
@@ -363,11 +366,10 @@ export class ImportController {
         errorCount 
       });
     } catch (error: any) {
-      console.error(error);
-      fs.appendFileSync('imports.log', `[FATAL ERROR PRODUCTS] ${error.message}\n${error.stack}\n`);
+      logger.error('imports.log', { err: `[FATAL ERROR PRODUCTS] ${error.message}\n${error.stack}\n` });
       if (req.file) fs.unlinkSync(req.file.path);
-      return res.status(400).json({ error: error.message || 'Formato de arquivo inválido. Tente enviar novamente como .xlsx ou .csv' });
+      return res.status(400).json({ error: '' });
     }
-  }
+  }, "importar produtos");
 
 }

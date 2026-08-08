@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { logger } from '../../lib/logger';
 import { prisma } from '../../lib/prisma';
 import { ensureCategories, getEffectiveUserId } from './helpers';
 
@@ -17,7 +18,7 @@ export class PersonalCategoryController {
 
       return res.json(categories);
     } catch (error) {
-      console.error('Erro ao listar categorias PF:', error);
+      logger.error('Erro ao listar categorias PF:', error);
       return res.status(500).json({ error: 'Erro interno' });
     }
   }
@@ -36,7 +37,7 @@ export class PersonalCategoryController {
 
       return res.status(201).json(category);
     } catch (error) {
-      console.error('Erro ao criar categoria PF:', error);
+      logger.error('Erro ao criar categoria PF:', error);
       return res.status(500).json({ error: 'Erro interno' });
     }
   }
@@ -58,7 +59,7 @@ export class PersonalCategoryController {
 
       return res.json(category);
     } catch (error) {
-      console.error('Erro ao atualizar categoria PF:', error);
+      logger.error('Erro ao atualizar categoria PF:', error);
       return res.status(500).json({ error: 'Erro interno' });
     }
   }
@@ -75,7 +76,7 @@ export class PersonalCategoryController {
       await prisma.personalCategory.delete({ where: { id } });
       return res.status(204).send();
     } catch (error) {
-      console.error('Erro ao deletar categoria PF:', error);
+      logger.error('Erro ao deletar categoria PF:', error);
       return res.status(500).json({ error: 'Erro interno' });
     }
   }

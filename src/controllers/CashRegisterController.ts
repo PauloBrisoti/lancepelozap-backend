@@ -1,9 +1,10 @@
 import { Request, Response } from 'express';
+import { logger } from '../lib/logger';
+import { asyncHandler } from "../lib/asyncHandler";
 import { prisma } from '../lib/prisma';
 
 export class CashRegisterController {
-  async open(req: Request, res: Response) {
-    try {
+  open = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId;
       const userId = req.user?.id;
       if (!storeId || !userId) return res.status(401).json({ message: 'Usuário ou loja não identificados' });
@@ -27,14 +28,10 @@ export class CashRegisterController {
       });
 
       res.status(201).json({ message: 'Caixa aberto com sucesso', cashRegister });
-    } catch (error: any) {
-      console.error('Erro ao abrir caixa:', error);
-      res.status(500).json({ message: error.message || 'Erro ao abrir caixa' });
-    }
-  }
+    
+  }, "abrir");
 
-  async close(req: Request, res: Response) {
-    try {
+  close = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId;
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
@@ -90,14 +87,10 @@ export class CashRegisterController {
         saldoEsperado,
         diferenca,
       });
-    } catch (error: any) {
-      console.error('Erro ao fechar caixa:', error);
-      res.status(500).json({ message: error.message || 'Erro ao fechar caixa' });
-    }
-  }
+    
+  }, "fechar");
 
-  async getCurrent(req: Request, res: Response) {
-    try {
+  getCurrent = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId;
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
@@ -129,14 +122,10 @@ export class CashRegisterController {
           totalVendas: totalRecebidoEmCaixa,
         }
       });
-    } catch (error: any) {
-      console.error('Erro ao buscar caixa atual:', error);
-      res.status(500).json({ message: error.message || 'Erro ao buscar caixa' });
-    }
-  }
+    
+  }, "obter current");
 
-  async getSummary(req: Request, res: Response) {
-    try {
+  getSummary = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId;
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
@@ -188,14 +177,10 @@ export class CashRegisterController {
           porFormaPagamento: byPaymentMethod,
         },
       });
-    } catch (error: any) {
-      console.error('Erro ao buscar resumo do caixa:', error);
-      res.status(500).json({ message: error.message || 'Erro interno' });
-    }
-  }
+    
+  }, "obter summary");
 
-  async getHistory(req: Request, res: Response) {
-    try {
+  getHistory = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId;
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
@@ -218,14 +203,10 @@ export class CashRegisterController {
       ]);
 
       res.json({ data: { records, total, page, limit } });
-    } catch (error: any) {
-      console.error('Erro ao listar histórico de caixas:', error);
-      res.status(500).json({ message: error.message || 'Erro ao listar caixas' });
-    }
-  }
+    
+  }, "obter history");
 
-  async addTransaction(req: Request, res: Response) {
-    try {
+  addTransaction = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId;
       const userId = req.user?.id;
       if (!storeId || !userId) return res.status(401).json({ message: 'Usuário ou loja não identificados' });
@@ -256,9 +237,6 @@ export class CashRegisterController {
         message: `${tipo === 'SANGRIA' ? 'Sangria' : 'Suprimento'} registrado com sucesso`,
         transaction
       });
-    } catch (error: any) {
-      console.error('Erro ao registrar transação de caixa:', error);
-      res.status(500).json({ message: error.message || 'Erro ao registrar transação' });
-    }
-  }
+    
+  }, "criar transaction");
 }

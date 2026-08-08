@@ -1,8 +1,9 @@
 import { prisma } from "../lib/prisma";
+import { logger } from '../lib/logger';
 import { differenceInDays, startOfDay } from "date-fns";
 
 function log(msg: string) {
-  console.log(`[PetRecorrenciaCron] ${new Date().toISOString()} ${msg}`);
+  logger.debug(`[PetRecorrenciaCron] ${new Date().toISOString()} ${msg}`);
 }
 
 export async function processarCobrancasRecorrentes() {

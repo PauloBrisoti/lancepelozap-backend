@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 import { fail } from '../lib/response';
 
@@ -29,7 +30,7 @@ export function requireWorkspaceType(...types: string[]) {
 
       next();
     } catch (error) {
-      console.error('Erro no middleware de workspace:', error);
+      logger.error("[requireWorkspaceType] Error:", error);
       next();
     }
   };

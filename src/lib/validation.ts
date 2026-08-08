@@ -121,6 +121,7 @@ export const transactionSchema = z.object({
 export const loginSchema = z.object({
   email: emailValido('E-mail inválido'),
   password: z.string().min(1, 'Senha é obrigatória'),
+  captchaToken: z.string().optional(),
 });
 
 export const passwordSchema = z
@@ -186,6 +187,6 @@ export const completeProfileSchema = z.object({
 export const createUserSchemaOld = z.object({
   nome: z.string().min(1),
   email: emailValido(),
-  password: z.string().min(6, 'Senha deve ter no mínimo 6 caracteres'),
+  password: z.string().min(8, 'Senha deve ter no mínimo 8 caracteres'),
   role: z.enum(['VENDEDOR', 'CAIXA', 'GERENTE']).optional().default('VENDEDOR'),
 });

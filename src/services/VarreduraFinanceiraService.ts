@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma";
+import { logger } from '../lib/logger';
 import { startOfDay, differenceInCalendarDays, format } from "date-fns";
 import { sendEmail } from "./email.service";
 import { escapeHtml } from "./email.service";
@@ -41,7 +42,7 @@ export interface PlanoVarredura {
 }
 
 function log(msg: string) {
-  console.log(`[VarreduraFinanceira] ${new Date().toISOString()} ${msg}`);
+  logger.debug(`[VarreduraFinanceira] ${new Date().toISOString()} ${msg}`);
 }
 
 /**

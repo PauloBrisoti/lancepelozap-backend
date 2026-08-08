@@ -1,18 +1,15 @@
 import { Request, Response } from 'express';
+import { asyncHandler } from "../lib/asyncHandler";
 import { prisma } from '../lib/prisma';
 
 export class PlanController {
-  async list(req: Request, res: Response) {
-    try {
+  list = asyncHandler(async (req: Request, res: Response) => {
       const plans = await prisma.plan.findMany({ orderBy: { precoMensal: 'asc' } });
       return res.json(plans);
-    } catch (error) {
-      return res.status(500).json({ error: 'Erro ao listar planos' });
-    }
-  }
+    
+  }, "listar");
 
-  async create(req: Request, res: Response) {
-    try {
+  create = asyncHandler(async (req: Request, res: Response) => {
       const { nome, precoMensal, maxControls, maxStores, features } = req.body;
       if (!nome || precoMensal === undefined) {
         return res.status(400).json({ error: 'Nome e preço mensal são obrigatórios' });
@@ -27,13 +24,10 @@ export class PlanController {
         },
       });
       return res.status(201).json(plan);
-    } catch (error) {
-      return res.status(500).json({ error: 'Erro ao criar plano' });
-    }
-  }
+    
+  }, "criar");
 
-  async update(req: Request, res: Response) {
-    try {
+  update = asyncHandler(async (req: Request, res: Response) => {
       const id = req.params.id as string;
       const existing = await prisma.plan.findUnique({ where: { id } });
       if (!existing) return res.status(404).json({ error: 'Plano não encontrado' });
@@ -50,13 +44,10 @@ export class PlanController {
         },
       });
       return res.json(updated);
-    } catch (error) {
-      return res.status(500).json({ error: 'Erro ao atualizar plano' });
-    }
-  }
+    
+  }, "atualizar");
 
-  async delete(req: Request, res: Response) {
-    try {
+  delete = asyncHandler(async (req: Request, res: Response) => {
       const id = req.params.id as string;
       const existing = await prisma.plan.findUnique({ where: { id } });
       if (!existing) return res.status(404).json({ error: 'Plano não encontrado' });
@@ -68,8 +59,6 @@ export class PlanController {
 
       await prisma.plan.delete({ where: { id } });
       return res.json({ message: 'Plano excluído' });
-    } catch (error) {
-      return res.status(500).json({ error: 'Erro ao excluir plano' });
-    }
-  }
+    
+  }, "excluir");
 }

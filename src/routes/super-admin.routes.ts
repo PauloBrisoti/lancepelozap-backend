@@ -3,37 +3,32 @@ import { SuperAdminController } from '../controllers/SuperAdminController';
 import { InternalTeamController } from '../controllers/InternalTeamController';
 import { PlanController } from '../controllers/PlanController';
 import { requireAuth } from '../middleware/auth';
+import { requireInternalTeam } from '../middleware/requireInternalTeam';
+import { requireAdmin2FA } from '../middleware/requireAdmin2FA';
 import { requireInternalPermission } from '../middleware/requireInternalPermission';
 import { requireDestructiveConfirmation } from '../middleware/requireDestructiveConfirmation';
-import { scopedClientFilter, requireScopedClientParam, requireScopedStoreParam } from '../middleware/requireClientScope';
-import { prisma } from '../lib/prisma';
+import { scopedClientFilter, requireScopedClientParam, requireScopedStoreParam, requireScopedUserParam, requireScopedSubscriptionParam, requireScopedInvoiceParam } from '../middleware/requireClientScope';
+import { requireStrictSuperAdmin } from '../middleware/requireStrictSuperAdmin';
+import { rateLimitDistributed } from '../lib/rateLimit';
 
 const router = Router();
 const superAdminController = new SuperAdminController();
 const teamController = new InternalTeamController();
 const planController = new PlanController();
 
+// Broadcast de notificação limitado (10/hora por usuário) — evita spam
+// in-app para todos os usuários do SaaS.
+const notificationLimiter = rateLimitDistributed({
+  keyPrefix: 'rl:superadmin:notif',
+  limits: [{ windowMs: 60 * 60 * 1000, max: 10 }],
+  keys: { ip: true, user: true },
+  message: 'Limite de envio de notificações atingido (10/hora).',
+});
+
 // Todas as rotas deste arquivo requerem autenticação
 router.use(requireAuth);
-
-const requireStrictSuperAdmin = async (req: Request, res: Response, next: NextFunction) => {
-  if (req.user?.role !== 'SUPER_ADMIN') {
-    return res.status(403).json({ error: 'Acesso negado. Apenas SUPER_ADMIN.' });
-  }
-  if (req.user.internalRoleId) {
-    const dbUser = await prisma.user.findUnique({
-      where: { id: req.user.id },
-      include: { internalRole: { select: { name: true } } },
-    });
-    if (dbUser?.internalRole && dbUser.internalRole.name !== 'SUPER_ADMIN') {
-      return res.status(403).json({ error: 'Acesso negado. Papel interno não autorizado.' });
-    }
-    if (dbUser?.expiresAt && dbUser.expiresAt.getTime() < Date.now()) {
-      return res.status(403).json({ error: 'Acesso expirado. Contate um administrador.' });
-    }
-  }
-  next();
-};
+// 2FA obrigatório para equipe interna/SUPER_ADMIN em produção
+router.use(requireAdmin2FA);
 
 // ==========================================
 // MÓDULO DE EQUIPE INTERNA (Restrito a SUPER_ADMIN real)
@@ -53,8 +48,9 @@ router.delete('/team/roles/:id', requireStrictSuperAdmin, teamController.deleteR
 // ROTAS DE MÓDULOS ESPECÍFICOS (Com RBAC)
 // ==========================================
 
-// Dashboard: Mínimo necessário é visualizar Clientes ou Financeiro, mas por hora vamos proteger só com a auth e o controller resolve
-router.get('/dashboard', scopedClientFilter, superAdminController.getDashboard.bind(superAdminController));
+// Dashboard: métricas globais do SaaS — apenas equipe interna (papel interno
+// ou SUPER_ADMIN nativo); lojistas comuns são bloqueados aqui.
+router.get('/dashboard', requireInternalTeam, scopedClientFilter, superAdminController.getDashboard.bind(superAdminController));
 
 // Módulo Clientes
 router.get('/clients', requireInternalPermission('CLIENTES', 'VIEW'), scopedClientFilter, superAdminController.getAllClients.bind(superAdminController));
@@ -83,7 +79,7 @@ router.put('/feature-flags', requireInternalPermission('CONFIGURACOES', 'FULL'),
 // Backup
 router.get('/backups', requireInternalPermission('CONFIGURACOES', 'VIEW'), superAdminController.listBackups.bind(superAdminController));
 router.post('/backup', requireInternalPermission('CONFIGURACOES', 'FULL'), superAdminController.triggerBackup.bind(superAdminController));
-router.get('/backups/:file/download', requireInternalPermission('CONFIGURACOES', 'VIEW'), superAdminController.downloadBackup.bind(superAdminController));
+router.get('/backups/:file/download', requireInternalPermission('CONFIGURACOES', 'FULL'), superAdminController.downloadBackup.bind(superAdminController));
 router.delete('/backups/:file', requireInternalPermission('CONFIGURACOES', 'FULL'), superAdminController.deleteBackup.bind(superAdminController));
 
 // Modo Manutenção
@@ -91,7 +87,7 @@ router.get('/maintenance', requireInternalPermission('CONFIGURACOES', 'VIEW'), s
 router.put('/maintenance', requireInternalPermission('CONFIGURACOES', 'FULL'), superAdminController.setMaintenanceMode.bind(superAdminController));
 
 // API Keys
-router.get('/api-keys', requireInternalPermission('CONFIGURACOES', 'VIEW'), superAdminController.listApiKeys.bind(superAdminController));
+router.get('/api-keys', requireInternalPermission('CONFIGURACOES', 'FULL'), superAdminController.listApiKeys.bind(superAdminController));
 router.put('/api-keys', requireInternalPermission('CONFIGURACOES', 'FULL'), superAdminController.saveApiKeys.bind(superAdminController));
 
 // Logs do Servidor
@@ -99,9 +95,9 @@ router.get('/server-logs', requireInternalPermission('AUDITORIA', 'VIEW'), super
 
 // Módulo Notificações
 router.get('/notifications', requireInternalPermission('CONFIGURACOES', 'VIEW'), superAdminController.listNotifications.bind(superAdminController));
-router.post('/notifications', requireInternalPermission('CONFIGURACOES', 'FULL'), superAdminController.sendNotification.bind(superAdminController));
-router.put('/notifications/:id/read', superAdminController.markNotificationRead.bind(superAdminController));
-router.put('/notifications/read-all', superAdminController.markAllNotificationsRead.bind(superAdminController));
+router.post('/notifications', requireInternalPermission('CONFIGURACOES', 'FULL'), notificationLimiter, superAdminController.sendNotification.bind(superAdminController));
+router.put('/notifications/:id/read', requireInternalPermission('CONFIGURACOES', 'VIEW'), superAdminController.markNotificationRead.bind(superAdminController));
+router.put('/notifications/read-all', requireInternalPermission('CONFIGURACOES', 'VIEW'), superAdminController.markAllNotificationsRead.bind(superAdminController));
 
 // Módulo Email
 router.post('/test-email', requireInternalPermission('CONFIGURACOES', 'FULL'), superAdminController.testEmail.bind(superAdminController));
@@ -121,15 +117,15 @@ router.post('/scan/execute', requireInternalPermission('FINANCEIRO', 'FULL'), re
 router.get('/scan/runs', requireInternalPermission('FINANCEIRO', 'VIEW'), superAdminController.getScanRuns.bind(superAdminController));
 
 // Módulo Assinaturas e Faturas
-router.get('/subscriptions/:clientId/invoices', requireInternalPermission('CLIENTES', 'VIEW'), superAdminController.getClientInvoices.bind(superAdminController));
-router.put('/subscriptions/:id/cancel', requireInternalPermission('FINANCEIRO', 'FULL'), superAdminController.cancelSubscription.bind(superAdminController));
-router.put('/subscriptions/:id/plan', requireInternalPermission('FINANCEIRO', 'FULL'), superAdminController.changeSubscriptionPlan.bind(superAdminController));
-router.post('/subscriptions/:id/invoices', requireInternalPermission('FINANCEIRO', 'FULL'), superAdminController.generateInvoice.bind(superAdminController));
-router.put('/invoices/:id/pay', requireInternalPermission('FINANCEIRO', 'FULL'), superAdminController.payInvoice.bind(superAdminController));
+router.get('/subscriptions/:clientId/invoices', requireInternalPermission('CLIENTES', 'VIEW'), requireScopedClientParam, superAdminController.getClientInvoices.bind(superAdminController));
+router.put('/subscriptions/:id/cancel', requireInternalPermission('FINANCEIRO', 'FULL'), requireScopedSubscriptionParam, superAdminController.cancelSubscription.bind(superAdminController));
+router.put('/subscriptions/:id/plan', requireInternalPermission('FINANCEIRO', 'FULL'), requireScopedSubscriptionParam, superAdminController.changeSubscriptionPlan.bind(superAdminController));
+router.post('/subscriptions/:id/invoices', requireInternalPermission('FINANCEIRO', 'FULL'), requireScopedSubscriptionParam, superAdminController.generateInvoice.bind(superAdminController));
+router.put('/invoices/:id/pay', requireInternalPermission('FINANCEIRO', 'FULL'), requireScopedInvoiceParam, superAdminController.payInvoice.bind(superAdminController));
 
 // Módulo Features por Loja
-router.get('/stores/:id/features', requireInternalPermission('CLIENTES', 'VIEW'), superAdminController.updateStoreFeatures.bind(superAdminController));
-router.put('/stores/:id/features', requireInternalPermission('CLIENTES', 'FULL'), superAdminController.updateStoreFeatures.bind(superAdminController));
+router.get('/stores/:storeId/features', requireInternalPermission('CLIENTES', 'VIEW'), requireScopedStoreParam, superAdminController.updateStoreFeatures.bind(superAdminController));
+router.put('/stores/:storeId/features', requireInternalPermission('CLIENTES', 'FULL'), requireScopedStoreParam, superAdminController.updateStoreFeatures.bind(superAdminController));
 
 // Módulo Planos
 router.get('/plans', requireInternalPermission('PLANOS_E_MODULOS', 'VIEW'), planController.list.bind(planController));
@@ -145,24 +141,24 @@ router.get('/audit-logs', requireInternalPermission('AUDITORIA', 'VIEW'), superA
 
 // Módulo Usuários e Senhas
 router.get('/users/all', requireInternalPermission('CLIENTES', 'VIEW'), superAdminController.listAllUsers.bind(superAdminController));
-router.put('/users/:id', requireInternalPermission('CLIENTES', 'FULL'), superAdminController.updateUser.bind(superAdminController));
-router.put('/users/:id/reset-password', requireInternalPermission('CLIENTES', 'FULL'), superAdminController.resetUserPassword.bind(superAdminController));
-router.post('/users/reset-all-passwords', requireInternalPermission('CLIENTES', 'FULL'), requireDestructiveConfirmation, superAdminController.resetAllUserPasswords.bind(superAdminController));
-router.delete('/users/:id', requireInternalPermission('CLIENTES', 'FULL'), superAdminController.deleteUser.bind(superAdminController));
+router.put('/users/:id', requireInternalPermission('CLIENTES', 'FULL'), requireScopedUserParam, superAdminController.updateUser.bind(superAdminController));
+router.put('/users/:id/reset-password', requireInternalPermission('CLIENTES', 'FULL'), requireScopedUserParam, superAdminController.resetUserPassword.bind(superAdminController));
+router.post('/users/reset-all-passwords', requireStrictSuperAdmin, requireInternalPermission('CLIENTES', 'FULL'), requireDestructiveConfirmation, superAdminController.resetAllUserPasswords.bind(superAdminController));
+router.delete('/users/:id', requireInternalPermission('CLIENTES', 'FULL'), requireScopedUserParam, superAdminController.deleteUser.bind(superAdminController));
 
 // Módulo Aprovação de Cadastros
 router.get('/pending-registrations', requireInternalPermission('CLIENTES', 'VIEW'), superAdminController.listPendingRegistrations.bind(superAdminController));
-router.post('/pending-registrations/:id/approve', requireInternalPermission('CLIENTES', 'FULL'), superAdminController.approveRegistration.bind(superAdminController));
-router.post('/pending-registrations/:id/reject', requireInternalPermission('CLIENTES', 'FULL'), superAdminController.rejectRegistration.bind(superAdminController));
+router.post('/pending-registrations/:id/approve', requireInternalPermission('CLIENTES', 'FULL'), requireScopedClientParam, superAdminController.approveRegistration.bind(superAdminController));
+router.post('/pending-registrations/:id/reject', requireInternalPermission('CLIENTES', 'FULL'), requireScopedClientParam, superAdminController.rejectRegistration.bind(superAdminController));
 
 // Módulo Reset de Banco
-router.post('/reset-database', requireInternalPermission('CONFIGURACOES', 'FULL'), requireDestructiveConfirmation, superAdminController.resetDatabase.bind(superAdminController));
+router.post('/reset-database', requireStrictSuperAdmin, requireInternalPermission('CONFIGURACOES', 'FULL'), requireDestructiveConfirmation, superAdminController.resetDatabase.bind(superAdminController));
 
 // Módulo Acesso e Liberações (Impersonation)
 router.post('/impersonate/:storeId', requireInternalPermission('ACESSO_E_LIBERACOES', 'FULL'), requireScopedStoreParam, superAdminController.impersonate.bind(superAdminController));
 router.post('/revert-impersonate', superAdminController.revertImpersonation.bind(superAdminController));
 router.get('/impersonation-logs', requireInternalPermission('ACESSO_E_LIBERACOES', 'VIEW'), superAdminController.getImpersonationLogs.bind(superAdminController));
-router.post('/clients/:id/restore', requireInternalPermission('CLIENTES', 'FULL'), superAdminController.restoreClient.bind(superAdminController));
-router.post('/clients/:id/purge', requireInternalPermission('CLIENTES', 'FULL'), superAdminController.purgeClient.bind(superAdminController));
+router.post('/clients/:id/restore', requireInternalPermission('CLIENTES', 'FULL'), requireScopedClientParam, superAdminController.restoreClient.bind(superAdminController));
+router.post('/clients/:id/purge', requireStrictSuperAdmin, requireInternalPermission('CLIENTES', 'FULL'), requireScopedClientParam, superAdminController.purgeClient.bind(superAdminController));
 
 export { router as superAdminRoutes };

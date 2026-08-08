@@ -66,14 +66,16 @@ model Client {
 }
 
 model ImpersonationLog {
-  id                String   @id @default(cuid())
-  impersonatorId    String   @map("impersonator_id")
-  impersonatorName  String?  @map("impersonator_name")
-  impersonatorEmail String?  @map("impersonator_email")
-  targetUserId      String?  @map("target_user_id")
-  targetStoreId     String   @map("target_store_id")
-  storeName         String?  @map("store_name")
-  createdAt         DateTime @default(now()) @map("created_at")
+  id                String    @id @default(cuid())
+  impersonatorId    String    @map("impersonator_id")
+  impersonatorName  String?   @map("impersonator_name")
+  impersonatorEmail String?   @map("impersonator_email")
+  targetUserId      String?   @map("target_user_id")
+  targetStoreId     String    @map("target_store_id")
+  storeName         String?   @map("store_name")
+  tipo              String    @default("START") // START | REVERT
+  createdAt         DateTime  @default(now()) @map("created_at")
+  endedAt           DateTime? @map("ended_at")
 
   @@index([targetStoreId, createdAt])
   @@map("impersonation_logs")
@@ -112,8 +114,27 @@ model Subscription {
   invoices Invoice[]
 
   cobrancaNotificacoes CobrancaNotificacao[]
+  webhookEvents        WebhookEvent[]
 
   @@map("subscriptions")
+}
+
+// Eventos de webhook já processados (idempotência: mesmo evento entregue
+// 2x não pode creditar/renovar 2x). Unique(eventId + eventType) garante
+// exatamente-uma-vez mesmo em entregas concorrentes.
+model WebhookEvent {
+  id            String   @id @default(cuid())
+  eventId        String       @map("event_id")
+  eventType      String       @map("event_type")
+  preapprovalId  String?      @map("preapproval_id")
+  subscriptionId String?      @map("subscription_id")
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  subscription Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, eventType])
+  @@index([subscriptionId, createdAt])
+  @@map("webhook_events")
 }
 
 model CobrancaNotificacao {
@@ -294,7 +315,16 @@ model User {
   monthlyBudgetLimit   Decimal? @map("monthly_budget_limit") @db.Decimal(12, 2)
   resetToken           String?  @map("reset_token")
   resetTokenExpires    DateTime? @map("reset_token_expires")
+  emailVerifiedAt      DateTime? @map("email_verified_at")
+  emailVerificationRequired Boolean @default(false) @map("email_verification_required")
+  emailVerifyToken     String?  @map("email_verify_token")
+  emailVerifyTokenExpires DateTime? @map("email_verify_token_expires")
   lastLogin            DateTime? @map("last_login")
+  lastLoginIp          String?  @map("last_login_ip")
+  lastActivityAt       DateTime? @map("last_activity_at")
+  loginAttempts        Int      @default(0) @map("login_attempts")
+  lockoutUntil         DateTime? @map("lockout_until")
+  tokenVersion         Int      @default(0) @map("token_version")
 
   clientAccess         ClientUser[]
   storeAccess          StoreUserAccess[]

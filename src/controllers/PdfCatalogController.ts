@@ -1,10 +1,13 @@
 import { Request, Response } from 'express';
+import { logger } from '../lib/logger';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import fs from 'fs';
+import { asyncHandler } from "../lib/asyncHandler";
 import { prisma } from '../lib/prisma';
 
 export class PdfCatalogController {
-  static async importPdfCatalog(req: Request, res: Response) {
+  static importPdfCatalog = asyncHandler(async (req: Request, res: Response) => {
+
     try {
       const storeId = (req as any).user?.storeId;
       if (!storeId) return res.status(401).json({ error: 'Não autorizado' });
@@ -61,7 +64,7 @@ Não inclua crases (markdown), nem a palavra "json" na resposta, apenas retorne 
       try {
         parsedProducts = JSON.parse(responseText);
       } catch (err) {
-        console.error("Erro ao fazer parse do JSON do Gemini", responseText);
+        logger.error("Erro ao fazer parse do JSON do Gemini", responseText);
         return res.status(500).json({ error: 'A Inteligência Artificial falhou ao estruturar os produtos.' });
       }
 
@@ -132,7 +135,7 @@ Não inclua crases (markdown), nem a palavra "json" na resposta, apenas retorne 
       if (req.file && fs.existsSync(req.file.path)) {
         try { fs.unlinkSync(req.file.path); } catch (e) {}
       }
-      console.error('Erro na importação de PDF:', error);
+      logger.error('Erro na importação de PDF:', error);
       
       let errorMessage = 'Erro interno ao processar o PDF.';
       if (error.message && error.message.includes('413')) {
@@ -141,7 +144,7 @@ Não inclua crases (markdown), nem a palavra "json" na resposta, apenas retorne 
          errorMessage = 'Erro de comunicação com a Inteligência Artificial (Verifique se o arquivo não está corrompido ou é pesado demais).';
       }
 
-      return res.status(500).json({ error: errorMessage, details: error.message });
+      return res.status(500).json({ error: errorMessage });
     }
-  }
+  }, "importar pdf catalog");
 }

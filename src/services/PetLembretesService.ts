@@ -1,9 +1,10 @@
 import { prisma } from "../lib/prisma";
+import { logger } from '../lib/logger';
 import { sendWhatsApp } from "./whatsapp.service";
 import { startOfDay, addDays, differenceInCalendarDays } from "date-fns";
 
 function log(msg: string) {
-  console.log(`[PetLembretes] ${new Date().toISOString()} ${msg}`);
+  logger.debug(`[PetLembretes] ${new Date().toISOString()} ${msg}`);
 }
 
 function normalizarTelefone(phone?: string | null): string | null {

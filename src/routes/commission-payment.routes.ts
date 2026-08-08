@@ -15,6 +15,7 @@ router.use(requirePlanFeature('comissoes'));
 router.use(autoAudit());
 
 router.get('/summary', controller.summary.bind(controller));
+router.get('/pending', controller.pendingDetail.bind(controller));
 router.get('/', controller.list.bind(controller));
 router.post('/',
   requireStorePermission('gerenciar_funcionarios'),

@@ -1,6 +1,13 @@
 import { Request, Response } from 'express';
+import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
-import bcrypt from 'bcryptjs';
+import { asyncHandler } from "../lib/asyncHandler";
+import { hashPassword } from '../utils/password';
+
+// SEGURANÇA: papéis permitidos para funcionários criados/editados por loja.
+// O cliente NUNCA pode definir papéis globais (SUPER_ADMIN, CLIENT_OWNER, USER)
+// nem papéis que não existem no RBAC de loja — só papéis de loja válidos.
+const STORE_ROLES_ALLOWED = new Set(['CAIXA', 'VENDEDOR', 'GERENTE', 'MANAGER', 'ADMIN', 'ADMIN_LOJA']);
 
 export class SettingsController {
   
@@ -8,8 +15,7 @@ export class SettingsController {
   // CONFIGURAÇÕES DA LOJA (TENANT)
   // ==========================================
   
-  async getTenantSettings(req: Request, res: Response) {
-    try {
+  getTenantSettings = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ error: 'Não autorizado' });
 
@@ -17,15 +23,13 @@ export class SettingsController {
         where: { id: storeId }
       });
 
-      return res.json(tenant);
-    } catch (error) {
-      console.error(error);
-      return res.status(500).json({ error: 'Erro ao buscar configurações da loja' });
-    }
-  }
+      // SEGURANÇA: nunca expor credenciais de integração (WhatsApp)
+      const { whatsappApiKey, ...safeTenant } = tenant as any;
+      return res.json(safeTenant);
+    
+  }, "obter tenant configurações");
 
-  async updateTenantSettings(req: Request, res: Response) {
-    try {
+  updateTenantSettings = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ error: 'Não autorizado' });
       
@@ -64,14 +68,10 @@ export class SettingsController {
       });
 
       return res.json(updatedTenant);
-    } catch (error) {
-      console.error(error);
-      return res.status(500).json({ error: 'Erro ao atualizar configurações da loja' });
-    }
-  }
+    
+  }, "atualizar tenant configurações");
 
-  async resetRevenue(req: Request, res: Response) {
-    try {
+  resetRevenue = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ error: 'Não autorizado' });
       
@@ -93,18 +93,14 @@ export class SettingsController {
       ]);
 
       return res.json({ message: 'Faturamento zerado com sucesso.' });
-    } catch (error) {
-      console.error(error);
-      return res.status(500).json({ error: 'Erro ao zerar faturamento' });
-    }
-  }
+    
+  }, "redefinir revenue");
 
   // ==========================================
   // GESTÃO DE EQUIPE (USUÁRIOS)
   // ==========================================
 
-  async getUsers(req: Request, res: Response) {
-    try {
+  getUsers = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ error: 'Não autorizado' });
 
@@ -136,14 +132,10 @@ export class SettingsController {
       })).sort((a, b) => a.nome.localeCompare(b.nome));
 
       return res.json(users);
-    } catch (error) {
-      console.error(error);
-      return res.status(500).json({ error: 'Erro ao buscar funcionários' });
-    }
-  }
+    
+  }, "obter usuários");
 
-  async createUser(req: Request, res: Response) {
-    try {
+  createUser = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ error: 'Não autorizado' });
 
@@ -157,13 +149,18 @@ export class SettingsController {
         return res.status(400).json({ error: 'Preencha todos os campos obrigatórios' });
       }
 
+      // Anti-escalada: apenas papéis de loja válidos (nunca SUPER_ADMIN/USER/etc.)
+      if (!STORE_ROLES_ALLOWED.has(role)) {
+        return res.status(400).json({ error: 'Papel inválido para funcionário' });
+      }
+
       // Verifica e-mail duplicado
       const emailExists = await prisma.user.findUnique({ where: { email } });
       if (emailExists) {
         return res.status(400).json({ error: 'E-mail já está em uso' });
       }
 
-      const senhaHash = await bcrypt.hash(senha, 10);
+      const senhaHash = await hashPassword(senha);
 
       const newUser = await prisma.user.create({
         data: {
@@ -180,20 +177,30 @@ export class SettingsController {
             }
           }
         },
-        include: {
-          storeAccess: true
+        // SEGURANÇA: devolve apenas campos seguros — nunca o senhaHash
+        select: {
+          id: true,
+          nome: true,
+          email: true,
+          role: true,
+          ativo: true,
+          createdAt: true,
+          storeAccess: {
+            select: {
+              storeId: true,
+              role: true,
+              permiteVendaPrazo: true,
+              limiteDescontoMaximo: true
+            }
+          }
         }
       });
 
       return res.status(201).json(newUser);
-    } catch (error) {
-      console.error(error);
-      return res.status(500).json({ error: 'Erro ao criar funcionário' });
-    }
-  }
+    
+  }, "criar usuário");
 
-  async updateUser(req: Request, res: Response) {
-    try {
+  updateUser = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       const id = req.params.id as string;
       
@@ -204,6 +211,11 @@ export class SettingsController {
       }
 
       const { nome, email, senha, role, permiteVendaPrazo, limiteDescontoMaximo, ativo } = req.body;
+
+      // Anti-escalada: apenas papéis de loja válidos (nunca SUPER_ADMIN/USER/etc.)
+      if (role !== undefined && !STORE_ROLES_ALLOWED.has(role)) {
+        return res.status(400).json({ error: 'Papel inválido para funcionário' });
+      }
 
       // Garantir que o usuário existe e pertence à mesma loja
       const existingUser = await prisma.storeUserAccess.findUnique({
@@ -229,7 +241,7 @@ export class SettingsController {
       if (ativo !== undefined) updateData.ativo = ativo;
 
       if (senha) {
-        updateData.senhaHash = await bcrypt.hash(senha, 10);
+        updateData.senhaHash = await hashPassword(senha);
       }
 
       const updatedUser = await prisma.user.update({
@@ -250,20 +262,30 @@ export class SettingsController {
             }
           }
         },
-        include: {
-          storeAccess: true
+        // SEGURANÇA: devolve apenas campos seguros — nunca o senhaHash
+        select: {
+          id: true,
+          nome: true,
+          email: true,
+          role: true,
+          ativo: true,
+          createdAt: true,
+          storeAccess: {
+            select: {
+              storeId: true,
+              role: true,
+              permiteVendaPrazo: true,
+              limiteDescontoMaximo: true
+            }
+          }
         }
       });
 
       return res.json(updatedUser);
-    } catch (error) {
-      console.error(error);
-      return res.status(500).json({ error: 'Erro ao atualizar funcionário' });
-    }
-  }
+    
+  }, "atualizar usuário");
 
-  async uploadPix(req: Request, res: Response) {
-    try {
+  uploadPix = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(403).json({ error: 'Acesso negado' });
 
@@ -280,10 +302,7 @@ export class SettingsController {
       });
 
       return res.json({ message: 'QR Code atualizado com sucesso', pixQrCodeUrl: fileUrl });
-    } catch (error) {
-      console.error(error);
-      return res.status(500).json({ error: 'Erro ao fazer upload da imagem' });
-    }
-  }
+    
+  }, "enviar pix");
 
 }

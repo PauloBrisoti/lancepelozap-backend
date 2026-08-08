@@ -42,22 +42,19 @@ describe('Gestão de usuários (UsuariosAdminPage)', () => {
     expect(found.lastLogin).toBeTruthy();
   });
 
-  it('reset individual grava auditoria e troca a senha', async () => {
+  it('reset individual grava auditoria e invalida a senha antiga (zero-knowledge)', async () => {
     const res = await request(app)
       .put(`/api/super-admin/users/${targetUserId}/reset-password`)
-      .set('Cookie', [`authToken=${superToken}`])
-      .send({ novaSenha: 'NovaSenha@2026' });
+      .set('Cookie', [`authToken=${superToken}`]);
     expect(res.status).toBe(200);
 
     const log = await prisma.auditLog.findFirst({ where: { acao: 'USER_PASSWORD_RESET' } });
     expect(log).toBeTruthy();
-    expect(log.dadosNovos).toHaveProperty('userId', targetUserId);
+    expect(log!.dadosNovos).toHaveProperty('userId', targetUserId);
 
-    // senha antiga não funciona mais
+    // senha antiga não funciona mais; o admin não conhece a nova (aleatória)
     const oldLogin = await request(app).post('/api/auth/login').send({ email: targetEmail, password: '123456' });
     expect(oldLogin.status).toBe(401);
-    const newLogin = await request(app).post('/api/auth/login').send({ email: targetEmail, password: 'NovaSenha@2026' });
-    expect(newLogin.status).toBe(200);
   });
 
   it('reset seletivo (userIds) atinge apenas os selecionados e ignora SUPER_ADMIN', async () => {
@@ -69,13 +66,13 @@ describe('Gestão de usuários (UsuariosAdminPage)', () => {
     const res = await request(app)
       .post('/api/super-admin/users/reset-all-passwords')
       .set('Cookie', [`authToken=${superToken}`])
-      .send({ senhaPadrao: 'Selecionado@2026', userIds: [targetUserId, superUser.id], confirmPassword: '123456' });
+      .send({ userIds: [targetUserId, superUser.id], confirmPassword: '123456' });
     expect(res.status).toBe(200);
     expect(res.body.count).toBe(1);
 
-    // target mudou, other não, super não
-    const targetOk = await request(app).post('/api/auth/login').send({ email: targetEmail, password: 'Selecionado@2026' });
-    expect(targetOk.status).toBe(200);
+    // target perdeu a senha conhecida (aleatória, admin não sabe); other e super intactos
+    const targetLogin = await request(app).post('/api/auth/login').send({ email: targetEmail, password: '123456' });
+    expect(targetLogin.status).toBe(401);
     const otherOk = await request(app).post('/api/auth/login').send({
       email: (await prisma.user.findUnique({ where: { id: otherUserId } }))!.email,
       password: '123456'
@@ -86,7 +83,7 @@ describe('Gestão de usuários (UsuariosAdminPage)', () => {
 
     const log = await prisma.auditLog.findFirst({ where: { acao: 'USERS_PASSWORD_BULK_RESET' } });
     expect(log).toBeTruthy();
-    expect(log.dadosNovos).toHaveProperty('count', 1);
+    expect(log!.dadosNovos).toHaveProperty('count', 1);
   });
 
   it('não desativa nem rebaixa o último Super Admin', async () => {

@@ -1,9 +1,11 @@
 import { Request, Response } from 'express';
+import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
+import { asyncHandler } from "../lib/asyncHandler";
+import { StockMovementService } from '../services/StockMovementService';
 
 export class InventoryCountController {
-  async list(req: Request, res: Response) {
-    try {
+  list = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
@@ -17,14 +19,10 @@ export class InventoryCountController {
       });
 
       res.json(counts);
-    } catch (error: any) {
-      console.error('Erro ao listar contagens:', error);
-      res.status(500).json({ message: error.message || 'Erro ao listar contagens' });
-    }
-  }
+    
+  }, "listar");
 
-  async create(req: Request, res: Response) {
-    try {
+  create = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       const userId = req.user?.id as string;
       if (!storeId || !userId) return res.status(401).json({ message: 'Usuário ou loja não identificados' });
@@ -55,14 +53,65 @@ export class InventoryCountController {
       });
 
       res.status(201).json(count);
-    } catch (error: any) {
-      console.error('Erro ao criar contagem:', error);
-      res.status(500).json({ message: error.message || 'Erro ao criar contagem' });
-    }
-  }
+    
+  }, "criar");
 
-  async updateItem(req: Request, res: Response) {
-    try {
+  addItemByEan = asyncHandler(async (req: Request, res: Response) => {
+      const storeId = req.user?.storeId as string;
+      if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
+
+      const id = req.params.id as string;
+      const ean = (req.body?.ean || '').trim();
+
+      if (!ean) return res.status(400).json({ message: 'Código de barras é obrigatório' });
+
+      const count = await prisma.inventoryCount.findFirst({
+        where: { id, storeId },
+        include: { items: true },
+      });
+
+      if (!count) return res.status(404).json({ message: 'Contagem não encontrada' });
+      if (count.status !== 'ABERTO') {
+        return res.status(400).json({ message: 'Contagem precisa estar aberta para adicionar itens' });
+      }
+
+      const product = await prisma.product.findFirst({
+        where: { storeId, codigoBarrasEan: ean },
+      });
+
+      if (!product) return res.status(404).json({ message: 'Produto não encontrado para este código de barras' });
+
+      const existingItem = count.items.find(i => i.productId === product.id);
+
+      let item;
+      if (existingItem) {
+        const novaQuantidade = Number(existingItem.quantidadeContada) + 1;
+        item = await prisma.inventoryCountItem.update({
+          where: { id: existingItem.id },
+          data: {
+            quantidadeContada: novaQuantidade,
+            diferenca: novaQuantidade - Number(existingItem.quantidadeSistema),
+          },
+          include: { product: { select: { id: true, nome: true, codigoVisual: true } } },
+        });
+      } else {
+        item = await prisma.inventoryCountItem.create({
+          data: {
+            inventoryCountId: id,
+            productId: product.id,
+            quantidadeSistema: Number(product.qtdEstoqueAtual),
+            quantidadeContada: 1,
+            diferenca: 1 - Number(product.qtdEstoqueAtual),
+          },
+          include: { product: { select: { id: true, nome: true, codigoVisual: true } } },
+        });
+      }
+
+      res.status(201).json(item);
+    
+  }, "criar item by ean");
+
+  updateItem = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
@@ -92,14 +141,10 @@ export class InventoryCountController {
       });
 
       res.json(updated);
-    } catch (error: any) {
-      console.error('Erro ao atualizar item da contagem:', error);
-      res.status(500).json({ message: error.message || 'Erro ao atualizar item' });
-    }
-  }
+    
+  }, "atualizar item");
 
-  async finalize(req: Request, res: Response) {
-    try {
+  finalize = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       const userId = req.user?.id as string;
       if (!storeId || !userId) return res.status(401).json({ message: 'Usuário ou loja não identificados' });
@@ -121,14 +166,10 @@ export class InventoryCountController {
       });
 
       res.json({ message: 'Contagem finalizada. Pendente de conciliação.' });
-    } catch (error: any) {
-      console.error('Erro ao finalizar contagem:', error);
-      res.status(500).json({ message: error.message || 'Erro ao finalizar contagem' });
-    }
-  }
+    
+  }, "finalizar");
 
-  async reconcile(req: Request, res: Response) {
-    try {
+  reconcile = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       const userId = req.user?.id as string;
       if (!storeId || !userId) return res.status(401).json({ message: 'Usuário ou loja não identificados' });
@@ -149,31 +190,18 @@ export class InventoryCountController {
           const diferenca = Number(item.diferenca);
           if (diferenca === 0) continue;
 
-          const product = await tx.product.findUnique({ where: { id: item.productId } });
-          if (!product) continue;
-
-          const saldoAnterior = Number(product.qtdEstoqueAtual);
-          const saldoPosterior = saldoAnterior + diferenca;
-
-          await tx.product.update({
-            where: { id: item.productId },
-            data: { qtdEstoqueAtual: saldoPosterior },
+          const result = await StockMovementService.movimentar(tx, {
+            storeId,
+            productId: item.productId,
+            userId,
+            tipo: 'AJUSTE',
+            quantidade: diferenca,
+            motivo: 'ERRO_CONTAGEM',
+            observacao: `Ajuste por contagem de inventário #${id.slice(0, 8)}: sistema ${item.quantidadeSistema}, contado ${item.quantidadeContada}`,
+            referenciaId: id,
+            skipSeProdutoInexistente: true,
           });
-
-          await tx.stockMovement.create({
-            data: {
-              storeId,
-              productId: item.productId,
-              userId,
-              tipo: 'AJUSTE',
-              quantidade: Math.abs(diferenca),
-              saldoAnterior,
-              saldoPosterior,
-              motivo: 'ERRO_CONTAGEM',
-              observacao: `Ajuste por contagem de inventário #${id.slice(0, 8)}: sistema ${item.quantidadeSistema}, contado ${item.quantidadeContada}`,
-              referenciaId: id,
-            },
-          });
+          if (!result) continue;
         }
 
         await tx.inventoryCount.update({
@@ -183,9 +211,6 @@ export class InventoryCountController {
       });
 
       res.json({ message: 'Contagem conciliada com sucesso. Estoque ajustado.' });
-    } catch (error: any) {
-      console.error('Erro ao conciliar contagem:', error);
-      res.status(500).json({ message: error.message || 'Erro ao conciliar contagem' });
-    }
-  }
+    
+  }, "reconcile");
 }

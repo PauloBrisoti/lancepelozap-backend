@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 import { fail } from '../lib/response';
 
@@ -33,7 +34,7 @@ export async function validateStoreLimit(req: Request, res: Response, next: Next
 
     next();
   } catch (error) {
-    console.error('Erro ao validar limite:', error);
+    logger.error('Erro ao validar limite:', error);
     return fail(res, 'Erro interno ao validar limites', 500);
   }
 }
@@ -73,7 +74,7 @@ export async function validateEmployeeLimit(req: Request, res: Response, next: N
 
     next();
   } catch (error) {
-    console.error('Erro ao validar limite de funcionários:', error);
+    logger.error('Erro ao validar limite:', error);
     return fail(res, 'Erro interno ao validar limites', 500);
   }
 }

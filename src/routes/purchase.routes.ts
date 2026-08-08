@@ -13,9 +13,15 @@ purchaseRouter.use(requireWorkspaceType('PJ'));
 purchaseRouter.use(autoAudit());
 
 purchaseRouter.get("/", controller.list);
-purchaseRouter.get("/credit-cards", controller.listCreditCards);
-purchaseRouter.get("/cards/:id/invoices", controller.cardInvoices);
-purchaseRouter.post("/cards/:id/invoice/pay", controller.payCardInvoice);
+purchaseRouter.get("/credit-cards",
+  requireStorePermission("gerenciar_compras"),
+  controller.listCreditCards);
+purchaseRouter.get("/cards/:id/invoices",
+  requireStorePermission("gerenciar_compras"),
+  controller.cardInvoices);
+purchaseRouter.post("/cards/:id/invoice/pay",
+  requireStorePermission("gerenciar_compras"),
+  controller.payCardInvoice);
 purchaseRouter.get("/:id", controller.getById);
 purchaseRouter.post("/",
   requireStorePermission("gerenciar_compras"),

@@ -1,9 +1,11 @@
 import { Request, Response } from 'express';
+import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
+import { asyncHandler } from "../lib/asyncHandler";
+import { StockMovementService } from '../services/StockMovementService';
 
 export class InventoryAdjustmentController {
-  async listMovements(req: Request, res: Response) {
-    try {
+  listMovements = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId;
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
@@ -29,14 +31,10 @@ export class InventoryAdjustmentController {
       ]);
 
       res.json({ records, total, page, limit });
-    } catch (error: any) {
-      console.error('Erro ao listar movimentações:', error);
-      res.status(500).json({ message: error.message || 'Erro ao listar movimentações' });
-    }
-  }
+    
+  }, "listar movements");
 
-  async adjustStock(req: Request, res: Response) {
-    try {
+  adjustStock = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId;
       const userId = req.user?.id;
       if (!storeId || !userId) return res.status(401).json({ message: 'Usuário ou loja não identificados' });
@@ -60,23 +58,14 @@ export class InventoryAdjustmentController {
       }
 
       await prisma.$transaction(async (tx) => {
-        await tx.product.update({
-          where: { id: productId },
-          data: { qtdEstoqueAtual: qtdNova },
-        });
-
-        await tx.stockMovement.create({
-          data: {
-            storeId,
-            productId,
-            userId,
-            tipo: 'AJUSTE',
-            quantidade: Math.abs(diferenca),
-            saldoAnterior: qtdAtual,
-            saldoPosterior: qtdNova,
-            motivo: motivo || null,
-            observacao: observacao || `Ajuste manual: ${qtdAtual} → ${qtdNova}`,
-          },
+        await StockMovementService.movimentar(tx, {
+          storeId,
+          productId,
+          userId,
+          tipo: 'AJUSTE',
+          quantidade: diferenca,
+          motivo: motivo || null,
+          observacao: observacao || `Ajuste manual: ${qtdAtual} → ${qtdNova}`,
         });
       });
 
@@ -86,14 +75,10 @@ export class InventoryAdjustmentController {
         quantidadeAnterior: qtdAtual,
         quantidadeNova: qtdNova,
       });
-    } catch (error: any) {
-      console.error('Erro ao ajustar estoque:', error);
-      res.status(500).json({ message: error.message || 'Erro ao ajustar estoque' });
-    }
-  }
+    
+  }, "ajustar estoque");
 
-  async getAlerts(req: Request, res: Response) {
-    try {
+  getAlerts = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId;
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
@@ -121,9 +106,6 @@ export class InventoryAdjustmentController {
       }));
 
       res.json({ count: mapped.length, products: mapped });
-    } catch (error: any) {
-      console.error('Erro ao buscar alertas de estoque:', error);
-      res.status(500).json({ message: error.message || 'Erro ao buscar alertas' });
-    }
-  }
+    
+  }, "obter alerts");
 }
