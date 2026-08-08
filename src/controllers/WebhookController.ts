@@ -1,28 +1,38 @@
 import { Request, Response } from 'express';
 import { timingSafeEqual, createHmac } from 'crypto';
 import { prisma } from '../lib/prisma';
-import { logger } from '../lib/logger';
 
+import { logger } from '../lib/logger';
 /**
  * Webhook do Mercado Pago.
  *
  * Defesa em profundidade (recomendação oficial MP):
  *   1. Validar a assinatura HMAC do header `x-signature` contra o segredo do webhook.
  *   2. NUNCA confiar no payload: consultar a API oficial do MP para confirmar o status real.
- *   3. Idempotência: só renovar se o status atual for diferente de PAGO.
+ *   3. Idempotência: o `data.id` do evento é registrado em `webhook_events`
+ *      (unique eventId+eventType) — mesmo evento entregue 2x é ignorado na 2ª.
+ *   4. Anti-replay: o timestamp da assinatura precisa estar dentro de ±5 minutos.
  *
  * Antes deste controller, qualquer pessoa podia POSTar aqui e liberar assinaturas
  * (status PAGO) de graça — o payload era aceito sem validação.
  */
 
 // ============================================================
-// CONFIG
+// CONFIG (lida por request — nunca hardcoded; testável por env)
 // ============================================================
 
-const MP_ACCESS_TOKEN = process.env.MP_ACCESS_TOKEN || '';
-/** Segredo do webhook configurado no painel do MP (Notificações/Webhooks). */
-const MP_WEBHOOK_SECRET = process.env.MP_WEBHOOK_SECRET || '';
+function getConfig() {
+  return {
+    accessToken: process.env.MP_ACCESS_TOKEN || '',
+    /** Segredo do webhook configurado no painel do MP (Notificações/Webhooks). */
+    webhookSecret: process.env.MP_WEBHOOK_SECRET || '',
+  };
+}
+
 const MP_API_BASE = 'https://api.mercadopago.com';
+
+/** Janela de tolerância do timestamp da assinatura (anti-replay). */
+const SIGNATURE_TOLERANCE_MS = 5 * 60 * 1000;
 
 /** Status do MP que consideramos "pago/autorizado" para renovar a assinatura. */
 const PAID_STATUSES = new Set(['authorized', 'active', 'processed']);
@@ -36,10 +46,12 @@ const PAID_STATUSES = new Set(['authorized', 'active', 'processed']);
  *
  * O header `x-signature` tem o formato: `ts=TIMESTAMP,v1=HEX_SIGNATURE`.
  * O `data.id` (ou query.id) + o timestamp formam o manifest assinado com HMAC-SHA256
- * usando o segredo do webhook.
+ * usando o segredo do webhook. O timestamp é validado dentro de ±5 min (anti-replay):
+ * uma captura reenviada depois da janela é rejeitada.
  */
 function verifySignature(req: Request, dataId: string): boolean {
-  if (!MP_WEBHOOK_SECRET) {
+  const { webhookSecret } = getConfig();
+  if (!webhookSecret) {
     logger.warn('MP_WEBHOOK_SECRET não configurado — webhook não pode validar assinatura.');
     return false;
   }
@@ -61,10 +73,21 @@ function verifySignature(req: Request, dataId: string): boolean {
   const v1 = parts['v1'];
   if (!ts || !v1) return false;
 
+  // Anti-replay: o ts precisa ser um número inteiro e estar dentro da janela.
+  const tsSeconds = Number(ts);
+  if (!Number.isInteger(tsSeconds) || tsSeconds <= 0) {
+    logger.warn('Webhook MP rejeitado: timestamp inválido.');
+    return false;
+  }
+  if (Math.abs(Date.now() - tsSeconds * 1000) > SIGNATURE_TOLERANCE_MS) {
+    logger.warn('Webhook MP rejeitado: timestamp fora da janela (replay?).');
+    return false;
+  }
+
   // O manifest é "dataId.ts" (ordem documentada pelo MP).
   const manifest = `${dataId}.${ts}`;
 
-  const expected = createHmac('sha256', MP_WEBHOOK_SECRET).update(manifest).digest('hex');
+  const expected = createHmac('sha256', webhookSecret).update(manifest).digest('hex');
 
   // Comparação constante-tempo para evitar timing attacks.
   if (expected.length !== v1.length) return false;
@@ -88,13 +111,14 @@ interface MPPreapproval {
 }
 
 async function fetchPreapprovalFromMP(preapprovalId: string): Promise<MPPreapproval | null> {
-  if (!MP_ACCESS_TOKEN) {
+  const { accessToken } = getConfig();
+  if (!accessToken) {
     logger.error('MP_ACCESS_TOKEN não configurado — impossível confirmar assinatura na API.');
     return null;
   }
   try {
     const res = await fetch(`${MP_API_BASE}/preapproval/${preapprovalId}`, {
-      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+      headers: { Authorization: `Bearer ${accessToken}` },
       signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) {
@@ -184,6 +208,27 @@ export class WebhookController {
           dataVencimento,
         },
       });
+
+      // 7. Registrar o evento processado (chave de idempotência). O unique
+      // (eventId+eventType) torna concorrente/reentrega inofensiva: se o MP
+      // entregar o mesmo data.id de novo, este INSERT falha com P2002 e o
+      // webhook responde 200 sem reprocessar (nenhum crédito/renovação dupla).
+      try {
+        await prisma.webhookEvent.create({
+          data: {
+            eventId: String(preapprovalId),
+            eventType: type || topic || 'subscription_preapproval',
+            preapprovalId: String(preapprovalId),
+            subscriptionId: subscription.id,
+          },
+        });
+      } catch (err) {
+        if ((err as { code?: string }).code === 'P2002') {
+          logger.info(`Webhook MP: evento ${preapprovalId} já processado (idempotência).`);
+        } else {
+          throw err;
+        }
+      }
 
       logger.info(
         `Assinatura ${subscription.id} atualizada via webhook: ${novoStatus} (MP: ${mpData.status}).`

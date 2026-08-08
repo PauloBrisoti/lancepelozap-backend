@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { logger } from '../../lib/logger';
 import { prisma } from '../../lib/prisma';
 import { ensureCategories, getCycleRange, getEffectiveUserId } from './helpers';
 
@@ -165,7 +166,7 @@ export class PersonalAIAnalysisController {
         } : null,
       });
     } catch (error) {
-      console.error('Erro na análise IA PF:', error);
+      logger.error('Erro na análise IA PF:', error);
       return res.status(500).json({ error: 'Erro interno' });
     }
   }

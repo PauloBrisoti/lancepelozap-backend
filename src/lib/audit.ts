@@ -1,4 +1,5 @@
 import { prisma } from './prisma';
+import { logger } from '../lib/logger';
 
 export async function auditLog(params: {
   storeId?: string | null;
@@ -20,6 +21,6 @@ export async function auditLog(params: {
       },
     });
   } catch (error) {
-    console.error('Erro ao registrar audit log:', error);
+    logger.error('Erro ao registrar audit log:', error);
   }
 }

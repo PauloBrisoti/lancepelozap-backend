@@ -116,6 +116,28 @@ describe('Compras / Purchase Orders (integração)', () => {
     expect(res.body.status).toBe('PENDENTE');
   });
 
+  it('POST /api/purchases — frete compõe o total e as parcelas', async () => {
+    const res = await agent.post('/api/purchases').send({
+      supplierId,
+      items: [{ productId: product.id, quantidade: 2, precoUnitario: 100 }],
+      formaPagamento: 'PARCELADO_FORNECEDOR',
+      numeroParcelas: 2,
+      primeiroVencimento: '2030-01-10',
+      valorFrete: 20,
+    });
+    expect(res.status).toBe(201);
+    expect(Number(res.body.valorTotalBruto)).toBe(200);
+    expect(Number(res.body.valorTotalLiquido)).toBe(220);
+
+    const payables = await prisma.accountPayable.findMany({
+      where: { purchaseOrderId: res.body.id, status: 'PENDENTE' },
+      orderBy: { numeroParcela: 'asc' },
+    });
+    expect(payables).toHaveLength(2);
+    const somaParcelas = payables.reduce((acc, p) => acc + Number(p.valor), 0);
+    expect(somaParcelas).toBeCloseTo(220, 1);
+  });
+
   it('POST /api/purchases — rejeita sem itens', async () => {
     const res = await agent.post('/api/purchases').send({ items: [] });
     expect(res.status).toBe(400);
@@ -138,7 +160,9 @@ describe('Compras / Purchase Orders (integração)', () => {
     const after = await prisma.product.findUnique({ where: { id: product.id } });
     expect(Number(after!.qtdEstoqueAtual)).toBe(stockBefore + 5);
 
-    const custoEsperado = ((stockBefore * 15) + (5 * 11)) / (stockBefore + 5);
+    // Desconto de R$ 10 no bruto de R$ 220 é rateado no custo unitário (custo = valor efetivamente pago)
+    const precoUnitarioEfetivo = 11 * ((220 - 10) / 220);
+    const custoEsperado = ((stockBefore * 15) + (5 * precoUnitarioEfetivo)) / (stockBefore + 5);
     expect(Number(after!.precoCusto)).toBeCloseTo(custoEsperado, 1);
   });
 

@@ -116,25 +116,25 @@ describe('Escopo por loja (papéis restritos a um cliente)', () => {
     const role = await prisma.internalRole.findFirst({ where: { name: 'Scoped Teste' } });
 
     const invalid = await request(app)
-      .put(`/api/super-admin/team/roles/${role.id}`)
+      .put(`/api/super-admin/team/roles/${role!.id}`)
       .set('Cookie', [`authToken=${superToken}`])
       .send({ clientId: 'cliente_inexistente' });
     expect(invalid.status).toBe(400);
 
     const ok = await request(app)
-      .put(`/api/super-admin/team/roles/${role.id}`)
+      .put(`/api/super-admin/team/roles/${role!.id}`)
       .set('Cookie', [`authToken=${superToken}`])
       .send({ clientId: clientB.client.id });
     expect(ok.status).toBe(200);
 
-    const refreshed = await prisma.internalRole.findUnique({ where: { id: role.id } });
-    expect(refreshed.clientId).toBe(clientB.client.id);
+    const refreshed = await prisma.internalRole.findUnique({ where: { id: role!.id } });
+    expect(refreshed!.clientId).toBe(clientB.client.id);
 
     // listRoles expõe o cliente do escopo
     const list = await request(app)
       .get('/api/super-admin/team/roles')
       .set('Cookie', [`authToken=${superToken}`]);
-    const listed = list.body.find((r: any) => r.id === role.id);
+    const listed = list.body.find((r: any) => r.id === role!.id);
     expect(listed.clientId).toBe(clientB.client.id);
     expect(listed.client?.nomeCompleto).toBeTruthy();
   });

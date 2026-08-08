@@ -1,12 +1,14 @@
 import { Request, Response } from "express";
+import { logger } from '../lib/logger';
 import { prisma } from "../lib/prisma";
-import bcrypt from "bcrypt";
+import { hashPassword } from "../utils/password";
 import crypto from "crypto";
+import { asyncHandler } from "../lib/asyncHandler";
 
 export class InternalTeamController {
   // Lista usuários internos
-  async listUsers(req: Request, res: Response) {
-    try {
+  listUsers = asyncHandler(async (req: Request, res: Response) => {
+      // SEGURANÇA: whitelist de campos — nunca expor senhaHash/resetToken/twoFactorSecret
       const users = await prisma.user.findMany({
         where: {
           OR: [
@@ -14,21 +16,24 @@ export class InternalTeamController {
             { internalRoleId: { not: null } }
           ]
         },
-        include: {
+        select: {
+          id: true,
+          nome: true,
+          email: true,
+          role: true,
+          ativo: true,
+          expiresAt: true,
+          internalRoleId: true,
           internalRole: {
             include: { permissions: true }
           }
         }
       });
       res.json(users);
-    } catch (error) {
-      res.status(500).json({ error: "Erro ao listar usuários da equipe" });
-    }
-  }
+  }, "listar usuários da equipe");
 
   // Convida um usuário (apenas insere no banco como PENDENTE por enquanto)
-  async inviteUser(req: Request, res: Response) {
-    try {
+  inviteUser = asyncHandler(async (req: Request, res: Response) => {
       const { email, nome, roleId, expiresAt } = req.body;
       
       const role = await prisma.internalRole.findUnique({ where: { id: roleId } });
@@ -38,8 +43,9 @@ export class InternalTeamController {
       if (existingUser) return res.status(400).json({ error: "Usuário com esse e-mail já existe." });
 
       // Criptografar uma senha aleatória para garantir segurança até o aceite
+      // (zero-knowledge: ninguém — nem o admin — conhece ou recebe essa senha)
       const randomPassword = crypto.randomBytes(20).toString('hex');
-      const senhaHash = await bcrypt.hash(randomPassword, 10);
+      const senhaHash = await hashPassword(randomPassword);
 
       const user = await prisma.user.create({
         data: {
@@ -50,6 +56,16 @@ export class InternalTeamController {
           internalRoleId: role.id,
           ativo: false, // ficará false até aceitar
           expiresAt: expiresAt ? new Date(expiresAt) : null
+        },
+        // SEGURANÇA: devolve apenas campos seguros — nunca o senhaHash
+        select: {
+          id: true,
+          email: true,
+          nome: true,
+          role: true,
+          ativo: true,
+          expiresAt: true,
+          createdAt: true
         }
       });
 
@@ -65,14 +81,10 @@ export class InternalTeamController {
 
       // Em produção, dispararia e-mail aqui.
       res.json({ message: "Convite enviado (simulado).", user });
-    } catch (error) {
-      res.status(500).json({ error: "Erro ao convidar usuário." });
-    }
-  }
+  }, "convidar usuário");
 
   // Define ou remove a expiração de acesso de um usuário
-  async updateUserExpiry(req: Request, res: Response) {
-    try {
+  updateUserExpiry = asyncHandler(async (req: Request, res: Response) => {
       const id = req.params.id as string;
       const { expiresAt } = req.body; // ISO string ou null
 
@@ -101,14 +113,10 @@ export class InternalTeamController {
       });
 
       res.json({ message: "Expiração atualizada." });
-    } catch (error) {
-      res.status(500).json({ error: "Erro ao atualizar expiração." });
-    }
-  }
+  }, "atualizar expiração");
 
   // Altera o papel de um usuário
-  async changeRole(req: Request, res: Response) {
-    try {
+  changeRole = asyncHandler(async (req: Request, res: Response) => {
       const id = req.params.id as string;
       const { roleId } = req.body;
 
@@ -146,14 +154,10 @@ export class InternalTeamController {
       });
 
       res.json({ message: "Papel atualizado com sucesso." });
-    } catch (error) {
-      res.status(500).json({ error: "Erro ao alterar papel." });
-    }
-  }
+  }, "alterar papel");
 
   // Revoga o acesso de um usuário (inativa)
-  async revokeAccess(req: Request, res: Response) {
-    try {
+  revokeAccess = asyncHandler(async (req: Request, res: Response) => {
       const id = req.params.id as string;
       const user = await prisma.user.findUnique({ where: { id } });
       if (!user) return res.status(404).json({ error: "Usuário não encontrado." });
@@ -181,14 +185,10 @@ export class InternalTeamController {
       });
 
       res.json({ message: "Acesso revogado com sucesso." });
-    } catch (error) {
-      res.status(500).json({ error: "Erro ao revogar acesso." });
-    }
-  }
+  }, "revogar acesso");
 
   // Lista todos os papéis e permissões
-  async listRoles(req: Request, res: Response) {
-    try {
+  listRoles = asyncHandler(async (req: Request, res: Response) => {
       const includeRoles = {
         permissions: true,
         _count: { select: { users: true } },
@@ -243,190 +243,167 @@ export class InternalTeamController {
       }
 
       res.json(roles);
-    } catch (error) {
-      res.status(500).json({ error: "Erro ao listar papéis." });
-    }
-  }
+  }, "listar papéis");
 
   // Cria um novo papel
-  async createRole(req: Request, res: Response) {
-    try {
-      const { name, description, permissions, clientId } = req.body;
+  createRole = asyncHandler(async (req: Request, res: Response) => {
+    const { name, description, permissions, clientId } = req.body;
 
-      if (!name || !name.trim()) {
-        return res.status(400).json({ error: "Nome do papel é obrigatório." });
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: "Nome do papel é obrigatório." });
+    }
+
+    const existing = await prisma.internalRole.findUnique({ where: { name: name.trim().toUpperCase() } });
+    if (existing) return res.status(409).json({ error: "Já existe um papel com esse nome." });
+
+    if (clientId) {
+      const client = await prisma.client.findUnique({ where: { id: clientId } });
+      if (!client) return res.status(400).json({ error: "Cliente do escopo não encontrado." });
+    }
+
+    const role = await prisma.internalRole.create({
+      data: {
+        name: name.trim().toUpperCase(),
+        description: description || null,
+        clientId: clientId || null,
+        permissions: Array.isArray(permissions)
+          ? {
+              create: permissions
+                .filter((p: any) => p.module && (p.accessLevel === 'FULL' || p.accessLevel === 'VIEW' || (Array.isArray(p.actions) && p.actions.length > 0)))
+                .map((p: any) => ({
+                  module: p.module,
+                  accessLevel: p.accessLevel || 'NONE',
+                  actions: Array.isArray(p.actions) ? p.actions : []
+                }))
+            }
+          : undefined
+      },
+      include: { permissions: true }
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        userId: req.user!.id,
+        storeId: null,
+        acao: "ROLE_CREATED",
+        tabelaAfetada: "internal_roles",
+        dadosNovos: { id: role.id, name: role.name }
       }
+    });
 
-      const existing = await prisma.internalRole.findUnique({ where: { name: name.trim().toUpperCase() } });
-      if (existing) return res.status(409).json({ error: "Já existe um papel com esse nome." });
+    res.status(201).json(role);
+  }, "criar papel");
 
+  // Atualiza metadados de um papel (nome/descrição/escopo)
+  updateRole = asyncHandler(async (req: Request, res: Response) => {
+    const id = req.params.id as string;
+    const { name, description, clientId } = req.body;
+
+    const role = await prisma.internalRole.findUnique({ where: { id } });
+    if (!role) return res.status(404).json({ error: "Papel não encontrado." });
+    if (role.isSystem) return res.status(400).json({ error: "Papel de sistema não pode ser alterado." });
+
+    const data: Record<string, string | null> = {};
+    if (name !== undefined && name.trim()) {
+      const normalized = name.trim().toUpperCase();
+      const clash = await prisma.internalRole.findFirst({ where: { name: normalized, id: { not: id } } });
+      if (clash) return res.status(409).json({ error: "Já existe um papel com esse nome." });
+      data.name = normalized;
+    }
+    if (description !== undefined) data.description = description || null;
+    if (clientId !== undefined) {
       if (clientId) {
         const client = await prisma.client.findUnique({ where: { id: clientId } });
         if (!client) return res.status(400).json({ error: "Cliente do escopo não encontrado." });
       }
-
-      const role = await prisma.internalRole.create({
-        data: {
-          name: name.trim().toUpperCase(),
-          description: description || null,
-          clientId: clientId || null,
-          permissions: Array.isArray(permissions)
-            ? {
-                create: permissions
-                  .filter((p: any) => p.module && (p.accessLevel === 'FULL' || p.accessLevel === 'VIEW' || (Array.isArray(p.actions) && p.actions.length > 0)))
-                  .map((p: any) => ({
-                    module: p.module,
-                    accessLevel: p.accessLevel || 'NONE',
-                    actions: Array.isArray(p.actions) ? p.actions : []
-                  }))
-              }
-            : undefined
-        },
-        include: { permissions: true }
-      });
-
-      await prisma.auditLog.create({
-        data: {
-          userId: req.user!.id,
-          storeId: null,
-          acao: "ROLE_CREATED",
-          tabelaAfetada: "internal_roles",
-          dadosNovos: { id: role.id, name: role.name }
-        }
-      });
-
-      res.status(201).json(role);
-    } catch (error) {
-      console.error("[InternalTeamController.createRole] Error:", error);
-      res.status(500).json({ error: "Erro ao criar papel." });
+      data.clientId = clientId || null;
     }
-  }
 
-  // Atualiza metadados de um papel (nome/descrição/escopo)
-  async updateRole(req: Request, res: Response) {
-    try {
-      const id = req.params.id as string;
-      const { name, description, clientId } = req.body;
+    const updated = await prisma.internalRole.update({
+      where: { id },
+      data,
+      include: { permissions: true }
+    });
 
-      const role = await prisma.internalRole.findUnique({ where: { id } });
-      if (!role) return res.status(404).json({ error: "Papel não encontrado." });
-      if (role.isSystem) return res.status(400).json({ error: "Papel de sistema não pode ser alterado." });
-
-      const data: Record<string, string | null> = {};
-      if (name !== undefined && name.trim()) {
-        const normalized = name.trim().toUpperCase();
-        const clash = await prisma.internalRole.findFirst({ where: { name: normalized, id: { not: id } } });
-        if (clash) return res.status(409).json({ error: "Já existe um papel com esse nome." });
-        data.name = normalized;
+    await prisma.auditLog.create({
+      data: {
+        userId: req.user!.id,
+        storeId: null,
+        acao: "ROLE_UPDATED",
+        tabelaAfetada: "internal_roles",
+        dadosAntigos: { name: role.name, description: role.description },
+        dadosNovos: { name: updated.name, description: updated.description }
       }
-      if (description !== undefined) data.description = description || null;
-      if (clientId !== undefined) {
-        if (clientId) {
-          const client = await prisma.client.findUnique({ where: { id: clientId } });
-          if (!client) return res.status(400).json({ error: "Cliente do escopo não encontrado." });
-        }
-        data.clientId = clientId || null;
-      }
+    });
 
-      const updated = await prisma.internalRole.update({
-        where: { id },
-        data,
-        include: { permissions: true }
-      });
-
-      await prisma.auditLog.create({
-        data: {
-          userId: req.user!.id,
-          storeId: null,
-          acao: "ROLE_UPDATED",
-          tabelaAfetada: "internal_roles",
-          dadosAntigos: { name: role.name, description: role.description },
-          dadosNovos: { name: updated.name, description: updated.description }
-        }
-      });
-
-      res.json(updated);
-    } catch (error) {
-      console.error("[InternalTeamController.updateRole] Error:", error);
-      res.status(500).json({ error: "Erro ao atualizar papel." });
-    }
-  }
+    res.json(updated);
+  }, "atualizar papel");
 
   // Exclui um papel (protegido: sistema e papéis em uso)
-  async deleteRole(req: Request, res: Response) {
-    try {
-      const id = req.params.id as string;
+  deleteRole = asyncHandler(async (req: Request, res: Response) => {
+    const id = req.params.id as string;
 
-      const role = await prisma.internalRole.findUnique({
-        where: { id },
-        include: { _count: { select: { users: true } } }
-      });
-      if (!role) return res.status(404).json({ error: "Papel não encontrado." });
-      if (role.isSystem) return res.status(400).json({ error: "Papel de sistema não pode ser excluído." });
-      if (role._count.users > 0) {
-        return res.status(409).json({ error: `Papel em uso por ${role._count.users} usuário(s). Reatribua os usuários antes de excluir.` });
-      }
-
-      await prisma.$transaction(async (tx) => {
-        await tx.internalRolePermission.deleteMany({ where: { roleId: id } });
-        await tx.internalRole.delete({ where: { id } });
-      });
-
-      await prisma.auditLog.create({
-        data: {
-          userId: req.user!.id,
-          storeId: null,
-          acao: "ROLE_DELETED",
-          tabelaAfetada: "internal_roles",
-          dadosAntigos: { id, name: role.name }
-        }
-      });
-
-      res.json({ message: "Papel excluído." });
-    } catch (error) {
-      console.error("[InternalTeamController.deleteRole] Error:", error);
-      res.status(500).json({ error: "Erro ao excluir papel." });
+    const role = await prisma.internalRole.findUnique({
+      where: { id },
+      include: { _count: { select: { users: true } } }
+    });
+    if (!role) return res.status(404).json({ error: "Papel não encontrado." });
+    if (role.isSystem) return res.status(400).json({ error: "Papel de sistema não pode ser excluído." });
+    if (role._count.users > 0) {
+      return res.status(409).json({ error: `Papel em uso por ${role._count.users} usuário(s). Reatribua os usuários antes de excluir.` });
     }
-  }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.internalRolePermission.deleteMany({ where: { roleId: id } });
+      await tx.internalRole.delete({ where: { id } });
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        userId: req.user!.id,
+        storeId: null,
+        acao: "ROLE_DELETED",
+        tabelaAfetada: "internal_roles",
+        dadosAntigos: { id, name: role.name }
+      }
+    });
+
+    res.json({ message: "Papel excluído." });
+  }, "excluir papel");
 
   // Edita permissões de um papel
-  async updateRolePermissions(req: Request, res: Response) {
-    console.log(`[updateRolePermissions] Called for role ${req.params.id}`);
-    try {
-      const id = req.params.id as string;
-      const { permissions } = req.body; // array { module: string, accessLevel: 'FULL'|'VIEW'|'NONE' }
-      console.log(`[updateRolePermissions] Permissions body:`, permissions);
+  updateRolePermissions = asyncHandler(async (req: Request, res: Response) => {
+    logger.debug(`[updateRolePermissions] Called for role ${req.params.id}`);
+    const id = req.params.id as string;
+    const { permissions } = req.body; // array { module: string, accessLevel: 'FULL'|'VIEW'|'NONE' }
+    logger.debug(`[updateRolePermissions] Permissions body:`, { arg0: permissions });
 
-      const role = await prisma.internalRole.findUnique({ where: { id } });
-      if (!role) return res.status(404).json({ error: "Papel não encontrado." });
+    const role = await prisma.internalRole.findUnique({ where: { id } });
+    if (!role) return res.status(404).json({ error: "Papel não encontrado." });
 
-      if (role.name === "SUPER_ADMIN") {
-        return res.status(400).json({ error: "Não é possível alterar as permissões do SUPER_ADMIN nativo." });
-      }
-
-      // Upsert permissões
-      for (const p of permissions) {
-        await prisma.internalRolePermission.upsert({
-          where: { roleId_module: { roleId: role.id, module: p.module } },
-          update: { accessLevel: p.accessLevel, actions: Array.isArray(p.actions) ? p.actions : [] },
-          create: { roleId: role.id, module: p.module, accessLevel: p.accessLevel, actions: Array.isArray(p.actions) ? p.actions : [] }
-        });
-      }
-
-      await prisma.auditLog.create({
-        data: {
-          userId: req.user!.id,
-          storeId: null,
-          acao: "ROLE_PERMISSION_UPDATED",
-          tabelaAfetada: "internal_roles",
-          dadosNovos: { roleId: role.id, permissions }
-        }
-      });
-
-      res.json({ message: "Permissões atualizadas com sucesso." });
-    } catch (error) {
-      console.error("[InternalTeamController.updateRolePermissions] Error:", error);
-      res.status(500).json({ error: "Erro ao atualizar permissões." });
+    if (role.name === "SUPER_ADMIN") {
+      return res.status(400).json({ error: "Não é possível alterar as permissões do SUPER_ADMIN nativo." });
     }
-  }
+
+    // Upsert permissões
+    for (const p of permissions) {
+      await prisma.internalRolePermission.upsert({
+        where: { roleId_module: { roleId: role.id, module: p.module } },
+        update: { accessLevel: p.accessLevel, actions: Array.isArray(p.actions) ? p.actions : [] },
+        create: { roleId: role.id, module: p.module, accessLevel: p.accessLevel, actions: Array.isArray(p.actions) ? p.actions : [] }
+      });
+    }
+
+    await prisma.auditLog.create({
+      data: {
+        userId: req.user!.id,
+        storeId: null,
+        acao: "ROLE_PERMISSION_UPDATED",
+        tabelaAfetada: "internal_roles",
+        dadosNovos: { roleId: role.id, permissions }
+      }
+    });
+
+    res.json({ message: "Permissões atualizadas com sucesso." });
+  }, "atualizar permissões");
 }

@@ -1,190 +1,76 @@
 {
-  
   "name": "backend",
-  
   "version": "1.0.0",
-  
   "type": "commonjs",
-  
   "main": "src/server.ts",
-  
   "scripts": {
-  
-    
-  "dev": "tsx watch src/server.ts",
-  
-    
-  "start": "node dist/server.js",
-  
-    
-  "build": "tsc",
-  
-    
-  "db:generate": "prisma generate",
-  
-    
-  "db:migrate": "prisma migrate dev",
-  
-    
-  "db:studio": "prisma studio",
-  
-    
-  "test": "vitest run",
-  
-    
-  "db:seed": "tsx prisma/seed.ts",
-  
-    
-  "audit": "npm audit --audit-level=high",
-  
-    
-  "security:check": "npm audit --audit-level=high && npx tsc --noEmit"
-  
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "build": "tsc",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:studio": "prisma studio",
+    "test": "vitest run",
+    "db:seed": "tsx prisma/seed.ts",
+    "audit": "npm audit --audit-level=high",
+    "security:check": "npm audit --audit-level=high && npx tsc --noEmit"
   },
-  
   "keywords": [],
-  
   "author": "",
-  
   "license": "ISC",
-  
   "dependencies": {
-  
-    
-  "@google/generative-ai": "^0.24.1",
-  
-    
-  "@prisma/adapter-pg": "^7.8.0",
-  
-    
-  "@prisma/client": "^7.8.0",
-  
-    
-  "bcrypt": "^6.0.0",
-  
-    
-  "bcryptjs": "^3.0.3",
-  
-    
-  "cookie-parser": "^1.4.7",
-  
-    
-  "cors": "^2.8.6",
-  
-    
-  "csv-parser": "^3.2.1",
-  
-    
-  "date-fns": "^4.4.0",
-  
-    
-  "date-fns-tz": "^3.2.0",
-  
-    
-  "dotenv": "^17.4.2",
-  
-    
-  "exceljs": "^4.4.0",
-  
-    
-  "express": "^5.2.1",
-  
-    
-  "express-rate-limit": "^8.5.2",
-  
-    
-  "helmet": "^8.2.0",
-  
-    
-  "jsonwebtoken": "^9.0.3",
-  
-    
-  "mercadopago": "^3.1.0",
-  
-    
-  "multer": "^2.2.0",
-  
-    
-  "node-cron": "^4.6.0",
-  
-    
-  "nodemailer": "^9.0.1",
-  
-    
-  "pdf-parse": "^2.4.5",
-  
-    
-  "pdfkit": "^0.19.1",
-  
-    
-  "qrcode": "^1.5.4",
-  
-    
-  "speakeasy": "^2.0.0",
-  
-    
-  "zod": "^4.4.3"
-  
+    "@google/generative-ai": "^0.24.1",
+    "@prisma/adapter-pg": "^7.9.1",
+    "@prisma/client": "^7.9.1",
+    "bcryptjs": "^3.0.3",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "date-fns": "^4.4.0",
+    "date-fns-tz": "^3.2.0",
+    "dotenv": "^17.4.2",
+    "exceljs": "^4.4.0",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.6.2",
+    "helmet": "^8.3.0",
+    "ioredis": "^6.0.0",
+    "jsonwebtoken": "^9.0.3",
+    "mercadopago": "^3.3.0",
+    "multer": "^2.2.0",
+    "node-cron": "^4.6.0",
+    "nodemailer": "^9.0.5",
+    "pdfkit": "^0.19.1",
+    "pino": "^10.3.1",
+    "qrcode": "^1.5.4",
+    "speakeasy": "^2.0.0",
+    "zod": "^4.4.3"
   },
-  
   "devDependencies": {
-  
-    
-  "@types/bcrypt": "^6.0.0",
-  
-    
-  "@types/bcryptjs": "^2.4.6",
-  
-    
-  "@types/cookie-parser": "^1.4.10",
-  
-    
-  "@types/cors": "^2.8.19",
-  
-    
-  "@types/express": "^5.0.6",
-  
-    
-  "@types/jsonwebtoken": "^9.0.10",
-  
-    
-  "@types/multer": "^2.1.0",
-  
-    
-  "@types/nodemailer": "^8.0.1",
-  
-    
-  "@types/pdf-parse": "^1.1.5",
-  
-    
-  "@types/pdfkit": "^0.17.6",
-  
-    
-  "@types/qrcode": "^1.5.6",
-  
-    
-  "@types/speakeasy": "^2.0.10",
-  
-    
-  "@types/supertest": "^7.2.0",
-  
-    
-  "@types/uuid": "^10.0.0",
-  
-    
-  "prisma": "^7.8.0",
-  
-    
-  "supertest": "^7.2.2",
-  
-    
-  "tsx": "^4.22.4",
-  
-    
-  "typescript": "^6.0.3",
-  
-    
-  "vitest": "^4.1.9"
-  
+    "@types/cookie-parser": "^1.4.10",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/multer": "^2.2.0",
+    "@types/nodemailer": "^8.0.1",
+    "@types/pdfkit": "^0.17.6",
+    "@types/qrcode": "^1.5.6",
+    "@types/speakeasy": "^2.0.10",
+    "@types/supertest": "^7.2.1",
+    "prisma": "^7.9.1",
+    "supertest": "^7.2.2",
+    "tsx": "^4.23.11",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  },
+  "overrides": {
+    "minimatch@3.1.5": {
+      "brace-expansion": "1.1.18"
+    },
+    "minimatch@5.1.9": {
+      "brace-expansion": "2.1.4"
+    },
+    "exceljs": {
+      "uuid": "11.1.1"
+    },
+    "ip-address": "10.4.0"
   }
 }

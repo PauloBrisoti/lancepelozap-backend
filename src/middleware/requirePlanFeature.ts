@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 import { fail } from '../lib/response';
 
@@ -83,7 +84,7 @@ export function requirePlanFeature(feature: Feature) {
 
       next();
     } catch (error) {
-      console.error('Erro no middleware de plano:', error);
+      logger.error("[requirePlanFeature] Error:", error);
       next();
     }
   };

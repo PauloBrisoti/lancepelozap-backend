@@ -1,10 +1,13 @@
 import { Request, Response } from "express";
+import { logger } from '../lib/logger';
 import { prisma } from "../lib/prisma";
 import { isValidCPF } from "../utils/cpfValidator";
 import { randomUUID } from 'crypto';
+import jwt from 'jsonwebtoken';
+import { asyncHandler } from "../lib/asyncHandler";
+import { getJwtSecret } from '../lib/jwt';
 
-export async function listCustomers(req: Request, res: Response) {
-  try {
+export const listCustomers = asyncHandler(async (req: Request, res: Response) => {
     // @ts-ignore - storeId vem do token decodificado pelo middleware
     const storeId = req.user?.storeId as string;
 
@@ -38,14 +41,10 @@ export async function listCustomers(req: Request, res: Response) {
     });
 
     return res.json(customersWithSaldo);
-  } catch (error: any) {
-    console.error("Erro ao listar clientes:", error);
-    return res.status(500).json({ error: "Erro interno ao listar clientes." });
-  }
-}
+  
+}, "listar clientes");
 
-export async function createCustomer(req: Request, res: Response) {
-  try {
+export const createCustomer = asyncHandler(async (req: Request, res: Response) => {
     // @ts-ignore
     const storeId = req.user?.storeId as string;
     if (!storeId) {
@@ -89,14 +88,10 @@ export async function createCustomer(req: Request, res: Response) {
     });
 
     return res.status(201).json(newCustomer);
-  } catch (error: any) {
-    console.error("Erro ao criar cliente:", error);
-    return res.status(500).json({ error: "Erro interno ao criar cliente." });
-  }
-}
+  
+}, "criar cliente");
 
-export async function updateCustomer(req: Request, res: Response) {
-  try {
+export const updateCustomer = asyncHandler(async (req: Request, res: Response) => {
     // @ts-ignore
     const storeId = req.user?.storeId as string;
     const id = req.params.id as string;
@@ -144,35 +139,38 @@ export async function updateCustomer(req: Request, res: Response) {
     });
 
     return res.json(updatedCustomer);
-  } catch (error: any) {
-    console.error("Erro ao atualizar cliente:", error);
-    return res.status(500).json({ error: "Erro interno ao atualizar cliente." });
-  }
-}
+  
+}, "atualizar cliente");
 
-export async function generatePortalToken(req: Request, res: Response) {
-  try {
+export const generatePortalToken = asyncHandler(async (req: Request, res: Response) => {
     const storeId = req.user?.storeId as string;
     const id = req.params.id as string;
 
     const customer = await prisma.customer.findFirst({ where: { id, storeId } });
     if (!customer) return res.status(404).json({ error: "Cliente não encontrado." });
 
+    // Rotaciona o token permanente antigo (mata links vazados já enviados)
     const token = randomUUID();
     await prisma.customer.update({
       where: { id },
       data: { portalToken: token },
     });
 
-    const portalUrl = `${req.protocol}://${req.get('host')}/portal/${token}`;
-    res.json({ portalToken: token, portalUrl, nome: customer.nomeCompleto });
-  } catch (error: any) {
-    console.error("Erro ao gerar token do portal:", error);
-    res.status(500).json({ error: "Erro ao gerar link do portal." });
-  }
-}
+    // Link curto: JWT assinado que expira em 24h — não fica gravado no banco,
+    // então um link vazado em logs/referer/WhatsApp tem validade limitada
+    const linkToken = jwt.sign(
+      { type: 'PORTAL_LINK', customerId: customer.id },
+      getJwtSecret(),
+      { expiresIn: '24h' }
+    );
 
-export async function deleteCustomer(req: Request, res: Response) {
+    const portalUrl = `${req.protocol}://${req.get('host')}/portal/${linkToken}`;
+    res.json({ portalToken: linkToken, portalUrl, nome: customer.nomeCompleto });
+  
+}, "gerar portal do cliente token");
+
+export const deleteCustomer = asyncHandler(async (req: Request, res: Response) => {
+
   try {
     // @ts-ignore
     const storeId = req.user?.storeId as string;
@@ -192,7 +190,7 @@ export async function deleteCustomer(req: Request, res: Response) {
 
     return res.json({ message: "Cliente excluído com sucesso." });
   } catch (error: any) {
-    console.error("Erro ao excluir cliente:", error);
+    logger.error("Erro ao excluir cliente:", error);
     
     // Erro de foreign key, ex: cliente tem vendas atreladas
     if (error.code === 'P2003') {
@@ -201,4 +199,4 @@ export async function deleteCustomer(req: Request, res: Response) {
 
     return res.status(500).json({ error: "Erro interno ao excluir cliente." });
   }
-}
+}, "excluir cliente");

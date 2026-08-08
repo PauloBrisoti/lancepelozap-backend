@@ -1,182 +1,183 @@
 import { Request, Response } from 'express';
+import { logger } from '../lib/logger';
+import { asyncHandler } from '../lib/asyncHandler';
 import { prisma } from '../lib/prisma';
-import bcrypt from 'bcryptjs';
+import { hashPassword, randomPassword } from '../utils/password';
 import jwt from 'jsonwebtoken';
 import fs from 'fs';
 import path from 'path';
-import { exec } from 'child_process';
+import { spawn } from 'child_process';
 import { toZonedTime, fromZonedTime } from 'date-fns-tz';
 import { getTimezone, parseDate } from '../lib/dateUtils';
 import { buildPlan, executePlan, enviarRelatorio } from '../services/VarreduraFinanceiraService';
+import { isStrictSuperAdmin } from '../middleware/requireStrictSuperAdmin';
+
+// SEGURANÇA: devolve as stores de um control com os segredos mascarados
+// (whatsappApiKey, credenciais de whatsappApiUrl) — nunca expor chaves de
+// integração nas listagens do painel. chavePix segue crua: a tela de edição
+// de loja do painel admin carrega e salva o valor real.
+function maskStoreSecrets(stores: any[]) {
+  return stores.map((s: any) => ({
+    ...s,
+    whatsappApiKey: s.whatsappApiKey ? `${s.whatsappApiKey.slice(0, 4)}****` : null,
+    whatsappApiUrl: s.whatsappApiUrl ? s.whatsappApiUrl.replace(/\/\/[^@/]*@/, '//***@') : null,
+  }));
+}
 
 export class SuperAdminController {
+
 
   // ==========================================
   // DASHBOARD SUPER ADMIN
   // ==========================================
 
-  async getDashboard(req: Request, res: Response) {
-    try {
-      // O middleware requireAuth e os middlewares do router já garantem o acesso
+  getDashboard = asyncHandler(async (req: Request, res: Response) => {
+    // O middleware requireAuth e os middlewares do router já garantem o acesso
 
-      const scopedClientId = (req as any).scopedClientId as string | undefined;
-      const scopeFilter = scopedClientId ? { clientId: scopedClientId } : {};
+    const scopedClientId = (req as any).scopedClientId as string | undefined;
+    const scopeFilter = scopedClientId ? { clientId: scopedClientId } : {};
 
-      const totalClients = await prisma.client.count({ where: scopedClientId ? { id: scopedClientId } : {} });
-      const totalStores = scopedClientId
-        ? await prisma.control.count({ where: scopeFilter })
-        : await prisma.store.count();
-      const totalUsers = scopedClientId
-        ? await prisma.user.count({
-            where: {
-              OR: [
-                { clientAccess: { some: { clientId: scopedClientId } } },
-                { storeAccess: { some: { store: { control: { clientId: scopedClientId } } } } }
-              ]
-            }
-          })
-        : await prisma.user.count();
-
-      // MRR do SaaS: Soma das mensalidades das assinaturas ativas/pagas
-      const totalRevenueAggr = await prisma.subscription.aggregate({
-        _sum: { valorMensalidade: true },
-        where: { statusPagamento: 'PAGO', ...(scopedClientId ? { clientId: scopedClientId } : {}) }
-      });
-
-      // Faturas pendentes do SaaS
-      const totalPendingReceivablesAggr = await prisma.invoice.aggregate({
-        _sum: { valorCobrado: true },
-        where: { status: 'PENDENTE', ...(scopedClientId ? { subscription: { clientId: scopedClientId } } : {}) }
-      });
-
-      // Top Lojas por assinaturas mais caras (ou mantemos quantidade de usuários?)
-      // Vamos pegar os clientes com as assinaturas mais altas
-      const topStoresAggr = await prisma.subscription.groupBy({
-        by: ['clientId'],
-        _sum: { valorMensalidade: true },
-        where: { statusPagamento: 'PAGO', ...(scopedClientId ? { clientId: scopedClientId } : {}) },
-        orderBy: { _sum: { valorMensalidade: 'desc' } },
-        take: 5
-      });
-
-      const topStoresList = await Promise.all(
-        topStoresAggr.map(async (t) => {
-          const client = await prisma.client.findUnique({ where: { id: t.clientId } });
-          return {
-            storeId: t.clientId, // mantendo compatibilidade com frontend por agora
-            nomeFantasia: client?.nomeCompleto || 'Desconhecido',
-            faturamentoTotal: t._sum.valorMensalidade || 0
-          };
+    const totalClients = await prisma.client.count({ where: scopedClientId ? { id: scopedClientId } : {} });
+    const totalStores = scopedClientId
+      ? await prisma.control.count({ where: scopeFilter })
+      : await prisma.store.count();
+    const totalUsers = scopedClientId
+      ? await prisma.user.count({
+          where: {
+            OR: [
+              { clientAccess: { some: { clientId: scopedClientId } } },
+              { storeAccess: { some: { store: { control: { clientId: scopedClientId } } } } }
+            ]
+          }
         })
-      );
+      : await prisma.user.count();
 
-      return res.json({
-        totalClients,
-        totalStores,
-        totalUsers,
-        totalRevenue: totalRevenueAggr._sum.valorMensalidade || 0,
-        totalPendingReceivables: totalPendingReceivablesAggr._sum.valorCobrado || 0,
-        topStores: topStoresList,
-        status: 'ok'
-      });
-    } catch (error) {
-      console.error(error);
-      return res.status(500).json({ error: 'Erro ao carregar dashboard do super admin' });
-    }
-  }
+    // MRR do SaaS: Soma das mensalidades das assinaturas ativas/pagas
+    const totalRevenueAggr = await prisma.subscription.aggregate({
+      _sum: { valorMensalidade: true },
+      where: { statusPagamento: 'PAGO', ...(scopedClientId ? { clientId: scopedClientId } : {}) }
+    });
+
+    // Faturas pendentes do SaaS
+    const totalPendingReceivablesAggr = await prisma.invoice.aggregate({
+      _sum: { valorCobrado: true },
+      where: { status: 'PENDENTE', ...(scopedClientId ? { subscription: { clientId: scopedClientId } } : {}) }
+    });
+
+    // Top Lojas por assinaturas mais caras (ou mantemos quantidade de usuários?)
+    // Vamos pegar os clientes com as assinaturas mais altas
+    const topStoresAggr = await prisma.subscription.groupBy({
+      by: ['clientId'],
+      _sum: { valorMensalidade: true },
+      where: { statusPagamento: 'PAGO', ...(scopedClientId ? { clientId: scopedClientId } : {}) },
+      orderBy: { _sum: { valorMensalidade: 'desc' } },
+      take: 5
+    });
+
+    const topStoresList = await Promise.all(
+      topStoresAggr.map(async (t) => {
+        const client = await prisma.client.findUnique({ where: { id: t.clientId } });
+        return {
+          storeId: t.clientId, // mantendo compatibilidade com frontend por agora
+          nomeFantasia: client?.nomeCompleto || 'Desconhecido',
+          faturamentoTotal: t._sum.valorMensalidade || 0
+        };
+      })
+    );
+
+    return res.json({
+      totalClients,
+      totalStores,
+      totalUsers,
+      totalRevenue: totalRevenueAggr._sum.valorMensalidade || 0,
+      totalPendingReceivables: totalPendingReceivablesAggr._sum.valorCobrado || 0,
+      topStores: topStoresList,
+      status: 'ok'
+    });
+  }, "carregar dashboard do super admin");
 
   // ==========================================
   // CLIENTES E LOJAS
   // ==========================================
 
   // Lista todos os Clientes e suas assinaturas e usuários
-  async getAllClients(req: Request, res: Response) {
-    try {
-      // RBAC já validado na rota
+  getAllClients = asyncHandler(async (req: Request, res: Response) => {
+    // RBAC já validado na rota
 
-      const scopedClientId = (req as any).scopedClientId as string | undefined;
+    const scopedClientId = (req as any).scopedClientId as string | undefined;
 
-      const clients = await prisma.client.findMany({
-        where: {
-          ...(req.query.includeArchived === 'true' ? {} : { deletedAt: null }),
-          ...(scopedClientId ? { id: scopedClientId } : {})
+    const clients = await prisma.client.findMany({
+      where: {
+        ...(req.query.includeArchived === 'true' ? {} : { deletedAt: null }),
+        ...(scopedClientId ? { id: scopedClientId } : {})
+      },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        subscriptions: true,
+        clientUsers: {
+          include: { user: { select: { id: true, nome: true, email: true, ativo: true } } }
         },
-        orderBy: { createdAt: 'desc' },
-        include: {
-          subscriptions: true,
-          clientUsers: {
-            include: { user: { select: { id: true, nome: true, email: true, ativo: true } } }
-          },
-          controls: {
-            include: {
-              stores: true
-            }
+        controls: {
+          include: {
+            stores: true
           }
         }
-      });
+      }
+    });
 
-      // Format for backwards compatibility with UI if needed, or UI can adapt.
-      const formatted = clients.map(client => ({
-        id: client.id,
-        nomeCompleto: client.nomeCompleto,
-        nomeFantasia: client.nomeCompleto, // mapping for UI compatibility
-        cnpjCpf: client.cnpjCpf,
-        telefoneWhatsapp: client.telefoneWhatsapp,
-        emailContato: client.email,
-        status: client.status,
-        createdAt: client.createdAt,
-        isDemo: client.isDemo,
-        deletedAt: client.deletedAt,
-        subscriptions: client.subscriptions,
-        users: client.clientUsers.map(cu => cu.user),
-        controls: client.controls
-      }));
+    // Format for backwards compatibility with UI if needed, or UI can adapt.
+    const formatted = clients.map(client => ({
+      id: client.id,
+      nomeCompleto: client.nomeCompleto,
+      nomeFantasia: client.nomeCompleto, // mapping for UI compatibility
+      cnpjCpf: client.cnpjCpf,
+      telefoneWhatsapp: client.telefoneWhatsapp,
+      emailContato: client.email,
+      status: client.status,
+      createdAt: client.createdAt,
+      isDemo: client.isDemo,
+      deletedAt: client.deletedAt,
+      subscriptions: client.subscriptions,
+      users: client.clientUsers.map(cu => cu.user),
+      controls: client.controls.map((c: any) => ({ ...c, stores: maskStoreSecrets(c.stores) }))
+    }));
 
-      return res.json(formatted);
-    } catch (error) {
-      console.error('Erro ao buscar clientes:', error);
-      return res.status(500).json({ error: 'Erro ao buscar dados dos clientes' });
-    }
-  }
+    return res.json(formatted);
+  }, "buscar clientes");
 
-  async getClientById(req: Request, res: Response) {
-    try {
-      const id = req.params.id as string;
-      const client = await prisma.client.findUnique({
-        where: { id },
-        include: {
-          subscriptions: true,
-          clientUsers: {
-            include: { user: { select: { id: true, nome: true, email: true, ativo: true } } }
-          },
-          controls: {
-            include: { stores: true }
-          }
+  getClientById = asyncHandler(async (req: Request, res: Response) => {
+    const id = req.params.id as string;
+    const client = await prisma.client.findUnique({
+      where: { id },
+      include: {
+        subscriptions: true,
+        clientUsers: {
+          include: { user: { select: { id: true, nome: true, email: true, ativo: true } } }
+        },
+        controls: {
+          include: { stores: true }
         }
-      });
+      }
+    });
 
-      if (!client) return res.status(404).json({ error: "Cliente não encontrado" });
+    if (!client) return res.status(404).json({ error: "Cliente não encontrado" });
 
-      const formatted = {
-        id: client.id,
-        nomeCompleto: client.nomeCompleto,
-        nomeFantasia: client.nomeCompleto,
-        cnpjCpf: client.cnpjCpf,
-        telefoneWhatsapp: client.telefoneWhatsapp,
-        emailContato: client.email,
-        status: client.status,
-        createdAt: client.createdAt,
-        subscriptions: client.subscriptions,
-        users: client.clientUsers.map(cu => cu.user),
-        controls: client.controls
-      };
+    const formatted = {
+      id: client.id,
+      nomeCompleto: client.nomeCompleto,
+      nomeFantasia: client.nomeCompleto,
+      cnpjCpf: client.cnpjCpf,
+      telefoneWhatsapp: client.telefoneWhatsapp,
+      emailContato: client.email,
+      status: client.status,
+      createdAt: client.createdAt,
+      subscriptions: client.subscriptions,
+      users: client.clientUsers.map(cu => cu.user),
+      controls: client.controls.map((c: any) => ({ ...c, stores: maskStoreSecrets(c.stores) }))
+    };
 
-      return res.json(formatted);
-    } catch (error) {
-      console.error("Erro ao buscar cliente:", error);
-      return res.status(500).json({ error: "Erro ao buscar dados do cliente" });
-    }
-  }
+    return res.json(formatted);
+  }, "buscar cliente");
 
   // Cria um novo Cliente manualmente (que por tabela cria Control, Store e User)
   async createClient(req: Request, res: Response) {
@@ -217,7 +218,7 @@ export class SuperAdminController {
         return res.status(400).json({ error: 'E-mail do responsável já está em uso' });
       }
 
-      const hashedPassword = await bcrypt.hash(senhaResponsavel, 10);
+      const hashedPassword = await hashPassword(senhaResponsavel);
       const tipo = workspaceType || 'PJ';
 
       const transactionResult = await prisma.$transaction(async (tx) => {
@@ -319,189 +320,192 @@ export class SuperAdminController {
         const { newClient, newUser } = transactionResult;
         await sendAccountApproved(newClient.email, newUser.nome, newUser.email);
       } catch (err) {
-        console.error('Erro ao enviar email de boas-vindas (createClient):', err);
+        logger.error('Erro ao enviar email de boas-vindas (createClient):', err);
       }
 
-      return res.status(201).json(transactionResult);
+      // SEGURANÇA: nunca devolver o objeto completo do Prisma na resposta —
+      // newUser contém senhaHash, newStore contém chavePix/whatsappApiKey.
+      const { newClient, newStore, newUser, newSubscription } = transactionResult;
+      return res.status(201).json({
+        client: {
+          id: newClient.id,
+          nomeCompleto: newClient.nomeCompleto,
+          email: newClient.email,
+          status: newClient.status,
+        },
+        user: { id: newUser.id, nome: newUser.nome, email: newUser.email },
+        store: { id: newStore.id, nomeFantasia: newStore.nomeFantasia },
+        subscription: { id: newSubscription.id, statusPagamento: newSubscription.statusPagamento },
+      });
     } catch (error: any) {
-      console.error('Erro ao criar cliente pelo super admin:', error.message, error.stack);
+      logger.error('Erro ao criar cliente pelo super admin:', { err: error.message });
       return res.status(500).json({ error: 'Erro ao registrar cliente' });
     }
   }
 
   // Atualiza um Cliente
-  async updateClient(req: Request, res: Response) {
-    try {
-      const id = req.params.id as string;
-      const { nomeFantasia, cnpjCpf, nichoPrincipal, telefoneWhatsapp, emailContato, chavePix, status, cep, logradouro, numero, complemento, bairro, cidade, uf, planId: _planId, statusPagamento, dataVencimento, workspaceType, isDemo } = req.body;
-      const planId = req.body.planoId || _planId;
+  updateClient = asyncHandler(async (req: Request, res: Response) => {
+    const id = req.params.id as string;
+    const { nomeFantasia, cnpjCpf, nichoPrincipal, telefoneWhatsapp, emailContato, chavePix, status, cep, logradouro, numero, complemento, bairro, cidade, uf, planId: _planId, statusPagamento, dataVencimento, workspaceType, isDemo } = req.body;
+    const planId = req.body.planoId || _planId;
 
-      const updateData: Record<string, any> = {};
-      if (nomeFantasia) updateData.nomeCompleto = nomeFantasia;
-      if (cnpjCpf) updateData.cnpjCpf = cnpjCpf;
-      if (telefoneWhatsapp) updateData.telefoneWhatsapp = telefoneWhatsapp;
-      if (emailContato) updateData.email = emailContato;
-      if (status) updateData.status = status;
-      if (typeof isDemo === 'boolean') updateData.isDemo = isDemo;
-      if (cep) updateData.cep = cep;
-      if (logradouro) updateData.logradouro = logradouro;
-      if (numero) updateData.numero = numero;
-      if (complemento) updateData.complemento = complemento;
-      if (bairro) updateData.bairro = bairro;
-      if (cidade) updateData.cidade = cidade;
-      if (uf) updateData.uf = uf;
+    const updateData: Record<string, any> = {};
+    if (nomeFantasia) updateData.nomeCompleto = nomeFantasia;
+    if (cnpjCpf) updateData.cnpjCpf = cnpjCpf;
+    if (telefoneWhatsapp) updateData.telefoneWhatsapp = telefoneWhatsapp;
+    if (emailContato) updateData.email = emailContato;
+    if (status) updateData.status = status;
+    if (typeof isDemo === 'boolean') updateData.isDemo = isDemo;
+    if (cep) updateData.cep = cep;
+    if (logradouro) updateData.logradouro = logradouro;
+    if (numero) updateData.numero = numero;
+    if (complemento) updateData.complemento = complemento;
+    if (bairro) updateData.bairro = bairro;
+    if (cidade) updateData.cidade = cidade;
+    if (uf) updateData.uf = uf;
 
-      const updatedClient = await prisma.client.update({
-        where: { id },
-        data: updateData
+    const updatedClient = await prisma.client.update({
+      where: { id },
+      data: updateData
+    });
+
+    if (nichoPrincipal !== undefined) {
+      const firstControl = await prisma.control.findFirst({
+        where: { clientId: id },
+        include: { stores: { take: 1, select: { id: true } } }
+      });
+      const firstStoreId = firstControl?.stores?.[0]?.id;
+      if (firstStoreId) {
+        await prisma.store.update({
+          where: { id: firstStoreId },
+          data: { nichoPrincipal: nichoPrincipal || null }
+        });
+      }
+    }
+
+    if (chavePix !== undefined) {
+      const firstControl = await prisma.control.findFirst({
+        where: { clientId: id },
+        include: { stores: { take: 1, select: { id: true } } }
+      });
+      const firstStoreId = firstControl?.stores?.[0]?.id;
+      if (firstStoreId) {
+        await prisma.store.update({
+          where: { id: firstStoreId },
+          data: { chavePix: chavePix || null }
+        });
+      }
+    }
+
+    if (planId || statusPagamento || dataVencimento) {
+      const latestSub = await prisma.subscription.findFirst({
+        where: { clientId: id },
+        orderBy: { createdAt: 'desc' }
       });
 
-      if (nichoPrincipal !== undefined) {
-        const firstControl = await prisma.control.findFirst({
-          where: { clientId: id },
-          include: { stores: { take: 1, select: { id: true } } }
-        });
-        const firstStoreId = firstControl?.stores?.[0]?.id;
-        if (firstStoreId) {
-          await prisma.store.update({
-            where: { id: firstStoreId },
-            data: { nichoPrincipal: nichoPrincipal || null }
-          });
+      if (latestSub) {
+        const updateData: any = {};
+        if (planId) {
+          const plan = await prisma.plan.findUnique({ where: { id: planId } });
+          if (!plan) return res.status(404).json({ error: 'Plano não encontrado' });
+          updateData.planId = planId;
+          updateData.valorMensalidade = plan.precoMensal;
         }
-      }
-
-      if (chavePix !== undefined) {
-        const firstControl = await prisma.control.findFirst({
-          where: { clientId: id },
-          include: { stores: { take: 1, select: { id: true } } }
-        });
-        const firstStoreId = firstControl?.stores?.[0]?.id;
-        if (firstStoreId) {
-          await prisma.store.update({
-            where: { id: firstStoreId },
-            data: { chavePix: chavePix || null }
-          });
+        if (statusPagamento) {
+          updateData.statusPagamento = statusPagamento;
         }
-      }
-
-      if (planId || statusPagamento || dataVencimento) {
-        const latestSub = await prisma.subscription.findFirst({
-          where: { clientId: id },
-          orderBy: { createdAt: 'desc' }
-        });
-
-        if (latestSub) {
-          const updateData: any = {};
-          if (planId) {
-            const plan = await prisma.plan.findUnique({ where: { id: planId } });
-            if (!plan) return res.status(404).json({ error: 'Plano não encontrado' });
-            updateData.planId = planId;
-            updateData.valorMensalidade = plan.precoMensal;
-          }
-          if (statusPagamento) {
-            updateData.statusPagamento = statusPagamento;
-          }
-          if (dataVencimento) {
-            updateData.dataVencimento = parseDate(dataVencimento) || new Date();
-          }
-
-          await prisma.subscription.update({
-            where: { id: latestSub.id },
-            data: updateData
-          });
+        if (dataVencimento) {
+          updateData.dataVencimento = parseDate(dataVencimento) || new Date();
         }
-      }
 
-      // Auto-marca como INADIMPLENTE se a data de vencimento está no passado
-      // (a menos que o admin tenha explicitamente definido como PAGO)
-      if (statusPagamento !== 'PAGO') {
-        const sub = await prisma.subscription.findFirst({
-          where: { clientId: id },
-          orderBy: { createdAt: 'desc' }
-        });
-        if (sub) {
-          const hoje = new Date();
-          hoje.setHours(0, 0, 0, 0);
-          const venc = new Date(sub.dataVencimento);
-          venc.setHours(0, 0, 0, 0);
-          if (venc < hoje && sub.statusPagamento !== 'PAGO' && sub.statusPagamento !== 'INADIMPLENTE') {
-            await prisma.subscription.update({
-              where: { id: sub.id },
-              data: { statusPagamento: 'INADIMPLENTE' }
-            });
-          }
-        }
-      }
-
-      if (workspaceType && ['PF', 'PJ'].includes(workspaceType)) {
-        await prisma.control.updateMany({
-          where: { clientId: id },
-          data: { tipo: workspaceType }
-        });
-
-        const clientControls = await prisma.control.findMany({
-          where: { clientId: id },
-          select: { id: true }
-        });
-
-        await prisma.store.updateMany({
-          where: { controlId: { in: clientControls.map(c => c.id) } },
-          data: { tipoWorkspace: workspaceType }
+        await prisma.subscription.update({
+          where: { id: latestSub.id },
+          data: updateData
         });
       }
-
-      return res.json(updatedClient);
-    } catch (error) {
-      console.error('Erro ao atualizar cliente:', error);
-      return res.status(500).json({ error: 'Erro ao atualizar dados do cliente' });
     }
-  }
+
+    // Auto-marca como INADIMPLENTE se a data de vencimento está no passado
+    // (a menos que o admin tenha explicitamente definido como PAGO)
+    if (statusPagamento !== 'PAGO') {
+      const sub = await prisma.subscription.findFirst({
+        where: { clientId: id },
+        orderBy: { createdAt: 'desc' }
+      });
+      if (sub) {
+        const hoje = new Date();
+        hoje.setHours(0, 0, 0, 0);
+        const venc = new Date(sub.dataVencimento);
+        venc.setHours(0, 0, 0, 0);
+        if (venc < hoje && sub.statusPagamento !== 'PAGO' && sub.statusPagamento !== 'INADIMPLENTE') {
+          await prisma.subscription.update({
+            where: { id: sub.id },
+            data: { statusPagamento: 'INADIMPLENTE' }
+          });
+        }
+      }
+    }
+
+    if (workspaceType && ['PF', 'PJ'].includes(workspaceType)) {
+      await prisma.control.updateMany({
+        where: { clientId: id },
+        data: { tipo: workspaceType }
+      });
+
+      const clientControls = await prisma.control.findMany({
+        where: { clientId: id },
+        select: { id: true }
+      });
+
+      await prisma.store.updateMany({
+        where: { controlId: { in: clientControls.map(c => c.id) } },
+        data: { tipoWorkspace: workspaceType }
+      });
+    }
+
+    return res.json(updatedClient);
+  }, "atualizar cliente");
 
   // Lista todos os usuários de um Cliente (owners + admins)
-  async getClientUsers(req: Request, res: Response) {
-    try {
-      // RBAC já validado na rota
+  getClientUsers = asyncHandler(async (req: Request, res: Response) => {
+    // RBAC já validado na rota
 
-      const id = req.params.id as string; // clientId
+    const id = req.params.id as string; // clientId
 
-      let clientUsers = await prisma.clientUser.findMany({
-        where: { clientId: id },
-        include: { user: { select: { id: true, nome: true, email: true, role: true, ativo: true } } }
-      });
+    let clientUsers = await prisma.clientUser.findMany({
+      where: { clientId: id },
+      include: { user: { select: { id: true, nome: true, email: true, role: true, ativo: true } } }
+    });
 
-      let users = clientUsers.map(cu => ({
-        ...cu.user,
-        clientRole: cu.role
-      }));
+    let users = clientUsers.map(cu => ({
+      ...cu.user,
+      clientRole: cu.role
+    }));
 
-      // Fallback para sistemas antigos: se não achar ClientUser, tenta achar pela Store associada ao Control do Client
-      if (users.length === 0) {
-        const controls = await prisma.control.findMany({ where: { clientId: id }, select: { id: true } });
-        const stores = await prisma.store.findMany({ where: { controlId: { in: controls.map(c => c.id) } }, select: { id: true } });
+    // Fallback para sistemas antigos: se não achar ClientUser, tenta achar pela Store associada ao Control do Client
+    if (users.length === 0) {
+      const controls = await prisma.control.findMany({ where: { clientId: id }, select: { id: true } });
+      const stores = await prisma.store.findMany({ where: { controlId: { in: controls.map(c => c.id) } }, select: { id: true } });
+      
+      if (stores.length > 0) {
+        const storeUsers = await prisma.storeUserAccess.findMany({
+          where: { storeId: { in: stores.map(s => s.id) } },
+          include: { user: { select: { id: true, nome: true, email: true, role: true, ativo: true } } }
+        });
         
-        if (stores.length > 0) {
-          const storeUsers = await prisma.storeUserAccess.findMany({
-            where: { storeId: { in: stores.map(s => s.id) } },
-            include: { user: { select: { id: true, nome: true, email: true, role: true, ativo: true } } }
-          });
-          
-          // Remove duplicados
-          const uniqueUsers = Array.from(new Set(storeUsers.map(su => su.user.id)))
-            .map(uid => storeUsers.find(su => su.user.id === uid)!);
+        // Remove duplicados
+        const uniqueUsers = Array.from(new Set(storeUsers.map(su => su.user.id)))
+          .map(uid => storeUsers.find(su => su.user.id === uid)!);
 
-          users = uniqueUsers.map(su => ({
-            ...su.user,
-            clientRole: su.role
-          }));
-        }
+        users = uniqueUsers.map(su => ({
+          ...su.user,
+          clientRole: su.role
+        }));
       }
-
-      return res.json(users);
-    } catch (error) {
-      console.error('Erro ao listar usuários do cliente:', error);
-      return res.status(500).json({ error: 'Erro ao listar funcionários' });
     }
-  }
+
+    return res.json(users);
+  }, "listar usuários do cliente");
 
   // ==========================================
   // CONFIGURAÇÕES GLOBAIS (WHITE-LABEL)
@@ -510,9 +514,22 @@ export class SuperAdminController {
   async getSystemSettings(req: Request, res: Response) {
     try {
       // RBAC já validado na rota
-      
+
       const settings = await prisma.systemSetting.findMany();
-      return res.json(settings);
+
+      // SEGURANÇA: chaves com secrets (API_KEYS, FEATURE_FLAGS_* de clientes)
+      // são mascaradas na leitura — o valor cru só sai pelos fluxos dedicados
+      // (POST /api-keys exige FULL).
+      const mascaradas = settings.map(s => {
+        const sensivel =
+          s.chave === 'API_KEYS' ||
+          s.chave === 'PAINEL_LOCKDOWN' ||
+          s.chave.startsWith('FEATURE_FLAGS_') ||
+          /KEY|SECRET|TOKEN/i.test(s.chave);
+        return sensivel ? { ...s, valor: '***' } : s;
+      });
+
+      return res.json(mascaradas);
     } catch (error) {
       return res.status(500).json({ error: 'Erro ao buscar configurações' });
     }
@@ -521,10 +538,18 @@ export class SuperAdminController {
   async updateSystemSettings(req: Request, res: Response) {
     try {
       // RBAC já validado na rota
-      
-      const { settings } = req.body; 
-      
+
+      const { settings } = req.body;
+
+      // Whitelist: chaves gerenciadas por fluxos específicos não podem ser
+      // sobrescritas aqui — impede contornar o PAINEL_LOCKDOWN ou escrever
+      // secrets fora do fluxo dedicado (FULL de CONFIGURACOES não basta).
+      const BLOQUEADAS = ['PAINEL_LOCKDOWN', 'API_KEYS', 'NOTIFICATIONS'];
+
       for (const s of settings) {
+        if (BLOQUEADAS.includes(s.chave) || s.chave.startsWith('FEATURE_FLAGS_')) {
+          return res.status(403).json({ error: `A chave "${s.chave}" é gerenciada por um fluxo específico.` });
+        }
         await prisma.systemSetting.upsert({
           where: { chave: s.chave },
           update: { valor: s.valor, descricao: s.descricao },
@@ -686,10 +711,12 @@ export class SuperAdminController {
 
   async testEmail(req: Request, res: Response) {
     try {
-      const { to, smtpConfig } = req.body;
+      const { to } = req.body;
       if (!to) return res.status(400).json({ error: 'Destinatário (to) obrigatório' });
 
       const { sendEmail } = await import('../services/email.service');
+      // SEGURANÇA: smtpConfig do body é ignorado — usa apenas a configuração
+      // do servidor (evita disparo via SMTP de terceiros com o branding do app).
       await sendEmail(
         to,
         'Teste de Email - Lance Pelo Zap',
@@ -697,8 +724,7 @@ export class SuperAdminController {
           <h2 style="color:#059669">Teste de Email</h2>
           <p>Se você está vendo esta mensagem, o SMTP está configurado corretamente!</p>
           <p style="color:#6b7280;font-size:12px">Enviado em ${new Date().toLocaleString('pt-BR')}</p>
-        </div>`,
-        smtpConfig
+        </div>`
       );
 
       return res.json({ message: 'Email de teste enviado com sucesso!' });
@@ -759,8 +785,19 @@ export class SuperAdminController {
         const userEmail = client.clientUsers[0]?.user?.email || client.email;
         await sendAccountApproved(client.email, userName, userEmail);
       } catch (err) {
-        console.error('Erro ao enviar email de aprovação:', err);
+        logger.error('Erro ao enviar email de aprovação:', err);
       }
+
+      // AUDIT
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user!.id,
+          storeId: null,
+          acao: 'REGISTRATION_APPROVED',
+          tabelaAfetada: 'clients',
+          dadosNovos: { clientId, nome: client.nomeCompleto },
+        },
+      });
 
       return res.json({ message: 'Cliente aprovado com sucesso! E-mail enviado.' });
     } catch (error) {
@@ -771,10 +808,27 @@ export class SuperAdminController {
   async rejectRegistration(req: Request, res: Response) {
     try {
       const clientId = req.params.id as string;
+      const client = await prisma.client.findUnique({
+        where: { id: clientId },
+        select: { id: true, nomeCompleto: true },
+      });
+      if (!client) return res.status(404).json({ error: 'Cliente não encontrado' });
+
       await prisma.client.update({
         where: { id: clientId },
         data: { status: 'INATIVO' },
       });
+
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user!.id,
+          storeId: null,
+          acao: 'REGISTRATION_REJECTED',
+          tabelaAfetada: 'clients',
+          dadosNovos: { clientId, nome: client.nomeCompleto },
+        },
+      });
+
       return res.json({ message: 'Cliente rejeitado.' });
     } catch (error) {
       return res.status(500).json({ error: 'Erro ao rejeitar cliente' });
@@ -804,6 +858,10 @@ export class SuperAdminController {
       `;
 
       for (const { tablename } of allTables) {
+        // DEFESA EM PROFUNDIDADE: o nome vem de pg_tables (não do usuário), mas
+        // nunca interpolamos strings em SQL sem whitelist rígida — mesmo que um
+        // dia uma fonte externa alimente essa lista, nada além de [a-z0-9_] passa.
+        if (!/^[a-z_][a-z0-9_]*$/.test(tablename)) continue;
         try {
           await prisma.$executeRawUnsafe(`TRUNCATE TABLE "public"."${tablename}" CASCADE;`);
         } catch {
@@ -816,7 +874,7 @@ export class SuperAdminController {
         tabelasPreservadas: protectedTables,
       });
     } catch (error: any) {
-      return res.status(500).json({ error: error.message });
+      return res.status(500).json({ error: 'Erro interno do servidor' });
     }
   }
 
@@ -824,144 +882,134 @@ export class SuperAdminController {
   // RELATÓRIOS FINANCEIROS SAAS
   // ==========================================
 
-  async getFinancialReports(req: Request, res: Response) {
-    try {
-      const hoje = toZonedTime(new Date(), getTimezone());
-      const meses: { label: string; inicio: Date; fim: Date }[] = [];
+  getFinancialReports = asyncHandler(async (req: Request, res: Response) => {
+    const hoje = toZonedTime(new Date(), getTimezone());
+    const meses: { label: string; inicio: Date; fim: Date }[] = [];
 
-      for (let i = 11; i >= 0; i--) {
-        const dt = new Date(hoje.getFullYear(), hoje.getMonth() - i, 1);
-        const ano = dt.getFullYear();
-        const mes = dt.getMonth() + 1;
-        const inicioStr = `${ano}-${String(mes).padStart(2, '0')}-01T00:00:00.000`;
-        const ultimoDia = new Date(ano, mes, 0).getDate();
-        const fimStr = `${ano}-${String(mes).padStart(2, '0')}-${String(ultimoDia).padStart(2, '0')}T23:59:59.999`;
-        const mesesPt = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
-        meses.push({ label: `${mesesPt[dt.getMonth()]}/${String(ano).slice(2)}`, inicio: fromZonedTime(inicioStr, getTimezone()), fim: fromZonedTime(fimStr, getTimezone()) });
-      }
-
-      const receitaMensal: { mes: string; receita: number; novosClientes: number; churn: number }[] = [];
-      let clientesAnterior = 0;
-
-      for (const mes of meses) {
-        const receita = await prisma.subscription.aggregate({
-          _sum: { valorMensalidade: true },
-          where: { statusPagamento: 'PAGO', createdAt: { lte: mes.fim } },
-        });
-
-        const novosClientes = await prisma.client.count({
-          where: { createdAt: { gte: mes.inicio, lte: mes.fim } },
-        });
-
-        const totalClientesAteMes = await prisma.client.count({
-          where: { createdAt: { lte: mes.fim } },
-        });
-
-        const churn = clientesAnterior > 0
-          ? Math.round(((clientesAnterior - (totalClientesAteMes - novosClientes)) / clientesAnterior) * 10000) / 100
-          : 0;
-
-        clientesAnterior = totalClientesAteMes;
-
-        receitaMensal.push({
-          mes: mes.label,
-          receita: Number(receita._sum.valorMensalidade || 0),
-          novosClientes,
-          churn: Math.max(0, churn),
-        });
-      }
-
-      const planos = await prisma.plan.findMany({
-        include: { _count: { select: { subscriptions: true } } },
-      });
-
-      const statusBreakdown = await prisma.subscription.groupBy({
-        by: ['statusPagamento'],
-        _count: { id: true },
-        _sum: { valorMensalidade: true },
-      });
-
-      const totalPago = await prisma.invoice.aggregate({ _sum: { valorCobrado: true }, where: { status: 'PAGO' } });
-      const totalPendente = await prisma.invoice.aggregate({ _sum: { valorCobrado: true }, where: { status: 'PENDENTE' } });
-
-      return res.json({
-        receitaMensal,
-        planos: planos.map(p => ({
-          nome: p.nome,
-          precoMensal: Number(p.precoMensal),
-          totalAssinantes: p._count.subscriptions,
-        })),
-        statusBreakdown: statusBreakdown.map(s => ({
-          status: s.statusPagamento,
-          quantidade: s._count.id,
-          valor: Number(s._sum.valorMensalidade || 0),
-        })),
-        totalFaturado: Number(totalPago._sum.valorCobrado || 0),
-        totalAReceber: Number(totalPendente._sum.valorCobrado || 0),
-      });
-    } catch (error) {
-      console.error('Erro nos relatórios financeiros:', error);
-      return res.status(500).json({ error: 'Erro ao gerar relatórios' });
+    for (let i = 11; i >= 0; i--) {
+      const dt = new Date(hoje.getFullYear(), hoje.getMonth() - i, 1);
+      const ano = dt.getFullYear();
+      const mes = dt.getMonth() + 1;
+      const inicioStr = `${ano}-${String(mes).padStart(2, '0')}-01T00:00:00.000`;
+      const ultimoDia = new Date(ano, mes, 0).getDate();
+      const fimStr = `${ano}-${String(mes).padStart(2, '0')}-${String(ultimoDia).padStart(2, '0')}T23:59:59.999`;
+      const mesesPt = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+      meses.push({ label: `${mesesPt[dt.getMonth()]}/${String(ano).slice(2)}`, inicio: fromZonedTime(inicioStr, getTimezone()), fim: fromZonedTime(fimStr, getTimezone()) });
     }
-  }
+
+    const receitaMensal: { mes: string; receita: number; novosClientes: number; churn: number }[] = [];
+    let clientesAnterior = 0;
+
+    for (const mes of meses) {
+      const receita = await prisma.subscription.aggregate({
+        _sum: { valorMensalidade: true },
+        where: { statusPagamento: 'PAGO', createdAt: { lte: mes.fim } },
+      });
+
+      const novosClientes = await prisma.client.count({
+        where: { createdAt: { gte: mes.inicio, lte: mes.fim } },
+      });
+
+      const totalClientesAteMes = await prisma.client.count({
+        where: { createdAt: { lte: mes.fim } },
+      });
+
+      const churn = clientesAnterior > 0
+        ? Math.round(((clientesAnterior - (totalClientesAteMes - novosClientes)) / clientesAnterior) * 10000) / 100
+        : 0;
+
+      clientesAnterior = totalClientesAteMes;
+
+      receitaMensal.push({
+        mes: mes.label,
+        receita: Number(receita._sum.valorMensalidade || 0),
+        novosClientes,
+        churn: Math.max(0, churn),
+      });
+    }
+
+    const planos = await prisma.plan.findMany({
+      include: { _count: { select: { subscriptions: true } } },
+    });
+
+    const statusBreakdown = await prisma.subscription.groupBy({
+      by: ['statusPagamento'],
+      _count: { id: true },
+      _sum: { valorMensalidade: true },
+    });
+
+    const totalPago = await prisma.invoice.aggregate({ _sum: { valorCobrado: true }, where: { status: 'PAGO' } });
+    const totalPendente = await prisma.invoice.aggregate({ _sum: { valorCobrado: true }, where: { status: 'PENDENTE' } });
+
+    return res.json({
+      receitaMensal,
+      planos: planos.map(p => ({
+        nome: p.nome,
+        precoMensal: Number(p.precoMensal),
+        totalAssinantes: p._count.subscriptions,
+      })),
+      statusBreakdown: statusBreakdown.map(s => ({
+        status: s.statusPagamento,
+        quantidade: s._count.id,
+        valor: Number(s._sum.valorMensalidade || 0),
+      })),
+      totalFaturado: Number(totalPago._sum.valorCobrado || 0),
+      totalAReceber: Number(totalPendente._sum.valorCobrado || 0),
+    });
+  }, "gerar relatórios financeiros");
 
   // ==========================================
   // INADIMPLENTES
   // ==========================================
 
-  async listOverdue(req: Request, res: Response) {
-    try {
-      const overdueSubs = await prisma.subscription.findMany({
-        where: { statusPagamento: { in: ['VENCIDO', 'PENDENTE'] } },
-        include: {
-          client: {
-            include: {
-              controls: {
-                include: { stores: { take: 1 } }
-              }
+  listOverdue = asyncHandler(async (req: Request, res: Response) => {
+    const overdueSubs = await prisma.subscription.findMany({
+      where: { statusPagamento: { in: ['VENCIDO', 'PENDENTE'] } },
+      include: {
+        client: {
+          include: {
+            controls: {
+              include: { stores: { take: 1 } }
             }
-          },
-          plan: true,
-          invoices: { orderBy: { mesReferencia: 'desc' }, take: 3 },
+          }
         },
-        orderBy: { dataVencimento: 'asc' },
-      });
+        plan: true,
+        invoices: { orderBy: { mesReferencia: 'desc' }, take: 3 },
+      },
+      orderBy: { dataVencimento: 'asc' },
+    });
 
-      const hoje = new Date();
-      const result = overdueSubs.map(sub => {
-        const store = sub.client.controls?.[0]?.stores?.[0];
-        const diasVencido = Math.floor((hoje.getTime() - new Date(sub.dataVencimento).getTime()) / 86400000);
-        return {
-          id: sub.id,
-          clientId: sub.client.id,
-          storeId: store?.id || null,
-          clientName: sub.client.nomeCompleto,
-          clientEmail: sub.client.email,
-          clientPhone: sub.client.telefoneWhatsapp,
-          storeName: store?.nomeFantasia || '-',
-          planName: sub.plan?.nome || '-',
-          valorMensalidade: Number(sub.valorMensalidade),
-          statusPagamento: sub.statusPagamento,
-          dataVencimento: sub.dataVencimento,
-          diasVencido: Math.max(0, diasVencido),
-          invoices: sub.invoices.map(i => ({
-            mesReferencia: i.mesReferencia,
-            valorCobrado: Number(i.valorCobrado),
-            status: i.status,
-          })),
-        };
-      });
+    const hoje = new Date();
+    const result = overdueSubs.map(sub => {
+      const store = sub.client.controls?.[0]?.stores?.[0];
+      const diasVencido = Math.floor((hoje.getTime() - new Date(sub.dataVencimento).getTime()) / 86400000);
+      return {
+        id: sub.id,
+        clientId: sub.client.id,
+        storeId: store?.id || null,
+        clientName: sub.client.nomeCompleto,
+        clientEmail: sub.client.email,
+        clientPhone: sub.client.telefoneWhatsapp,
+        storeName: store?.nomeFantasia || '-',
+        planName: sub.plan?.nome || '-',
+        valorMensalidade: Number(sub.valorMensalidade),
+        statusPagamento: sub.statusPagamento,
+        dataVencimento: sub.dataVencimento,
+        diasVencido: Math.max(0, diasVencido),
+        invoices: sub.invoices.map(i => ({
+          mesReferencia: i.mesReferencia,
+          valorCobrado: Number(i.valorCobrado),
+          status: i.status,
+        })),
+      };
+    });
 
-      return res.json({
-        total: result.length,
-        totalDevido: result.reduce((acc, r) => acc + r.valorMensalidade, 0),
-        inadimplentes: result,
-      });
-    } catch (error) {
-      console.error('Erro ao listar inadimplentes:', error);
-      return res.status(500).json({ error: 'Erro ao listar inadimplentes' });
-    }
-  }
+    return res.json({
+      total: result.length,
+      totalDevido: result.reduce((acc, r) => acc + r.valorMensalidade, 0),
+      inadimplentes: result,
+    });
+  }, "listar inadimplentes");
 
   // ==========================================
   // GESTÃO DE USUÁRIOS E SENHAS
@@ -1004,19 +1052,26 @@ export class SuperAdminController {
   async resetUserPassword(req: Request, res: Response) {
     try {
       const userId = req.params.id as string;
-      const { novaSenha } = req.body;
-
-      if (!novaSenha || novaSenha.length < 6) {
-        return res.status(400).json({ error: 'Nova senha deve ter no mínimo 6 caracteres' });
-      }
 
       const user = await prisma.user.findUnique({ where: { id: userId } });
       if (!user) return res.status(404).json({ error: 'Usuário não encontrado' });
 
-      const hashedPassword = await bcrypt.hash(novaSenha, 10);
+      if (user.role === 'SUPER_ADMIN') {
+        return res.status(400).json({ error: 'Não é possível redefinir a senha de um Super Admin' });
+      }
+
+      // ZERO-KNOWLEDGE: o admin nunca escolhe/conhece a senha do usuário.
+      // Gera uma senha aleatória forte; o usuário define a própria via
+      // "Esqueci minha senha" (o e-mail está cadastrado).
+      const hashedPassword = await hashPassword(randomPassword());
       await prisma.user.update({
         where: { id: userId },
-        data: { senhaHash: hashedPassword },
+        data: {
+          senhaHash: hashedPassword,
+          tokenVersion: { increment: 1 },
+          resetToken: null,
+          resetTokenExpires: null,
+        },
       });
 
       await prisma.auditLog.create({
@@ -1029,7 +1084,9 @@ export class SuperAdminController {
         }
       });
 
-      return res.json({ message: `Senha de ${user.nome} redefinida com sucesso` });
+      return res.json({
+        message: `Senha de ${user.nome} redefinida. O usuário deve definir uma nova senha usando "Esqueci minha senha".`,
+      });
     } catch (error) {
       return res.status(500).json({ error: 'Erro ao redefinir senha' });
     }
@@ -1037,13 +1094,11 @@ export class SuperAdminController {
 
   async resetAllUserPasswords(req: Request, res: Response) {
     try {
-      const { senhaPadrao, userIds } = req.body;
-      const password = senhaPadrao || 'Senha@123';
-      if (password.length < 8) {
-        return res.status(400).json({ error: 'Senha deve ter no mínimo 8 caracteres' });
-      }
+      const { userIds } = req.body;
 
-      const hashedPassword = await bcrypt.hash(password, 10);
+      // ZERO-KNOWLEDGE: NUNCA usar senha padrão conhecida por admin.
+      // Cada usuário recebe uma senha aleatória única e irreversível;
+      // o usuário define a própria via "Esqueci minha senha".
 
       // userIds presentes => reset seletivo (proteção: nunca inclui SUPER_ADMIN)
       // ausente => todos os usuários exceto Super Admin
@@ -1051,10 +1106,16 @@ export class SuperAdminController {
         ? { id: { in: userIds }, role: { not: 'SUPER_ADMIN' } }
         : { role: { not: 'SUPER_ADMIN' } };
 
-      const result = await prisma.user.updateMany({
-        where,
-        data: { senhaHash: hashedPassword },
-      });
+      const users = await prisma.user.findMany({ where, select: { id: true } });
+
+      // Senha aleatória por usuário (salt/hash únicos por hash)
+      for (const u of users) {
+        const hashedPassword = await hashPassword(randomPassword());
+        await prisma.user.update({
+          where: { id: u.id },
+          data: { senhaHash: hashedPassword, tokenVersion: { increment: 1 } },
+        });
+      }
 
       await prisma.auditLog.create({
         data: {
@@ -1062,59 +1123,92 @@ export class SuperAdminController {
           storeId: null,
           acao: "USERS_PASSWORD_BULK_RESET",
           tabelaAfetada: "users",
-          dadosNovos: { count: result.count, selecionados: Array.isArray(userIds) ? userIds.length : null }
+          dadosNovos: { count: users.length, selecionados: Array.isArray(userIds) ? userIds.length : null }
         }
       });
 
       return res.json({
-        message: `Senha de ${result.count} usuário(s) redefinida`,
-        count: result.count,
+        message: `Senha de ${users.length} usuário(s) redefinida. Cada usuário deve definir uma nova senha usando "Esqueci minha senha".`,
+        count: users.length,
       });
     } catch (error) {
       return res.status(500).json({ error: 'Erro ao redefinir senhas' });
     }
   }
 
-  async updateUser(req: Request, res: Response) {
-    try {
-      const userId = req.params.id as string;
-      const { nome, email, role, ativo } = req.body;
+  updateUser = asyncHandler(async (req: Request, res: Response) => {
+    const userId = req.params.id as string;
+    const { nome, email, role, ativo } = req.body;
 
-      const user = await prisma.user.findUnique({ where: { id: userId } });
-      if (!user) return res.status(404).json({ error: 'Usuário não encontrado' });
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) return res.status(404).json({ error: 'Usuário não encontrado' });
 
-      const data: any = {};
-      if (nome !== undefined) data.nome = nome;
-      if (email !== undefined) {
-        const existing = await prisma.user.findUnique({ where: { email } });
-        if (existing && existing.id !== userId) {
-          return res.status(400).json({ error: 'Este email já está em uso por outro usuário' });
-        }
-        data.email = email;
-      }
-      if (role !== undefined) data.role = role;
-      if (ativo !== undefined) data.ativo = ativo;
+    const isRoot = await isStrictSuperAdmin(req);
+    const alvoInterno = user.role === 'SUPER_ADMIN' || !!user.internalRoleId;
 
-      // Proteção: nunca remover/desativar o último Super Admin ativo
-      const rebaixando = (role !== undefined && role !== 'SUPER_ADMIN') || (ativo === false);
-      if (user.role === 'SUPER_ADMIN' && rebaixando) {
-        const adminCount = await prisma.user.count({ where: { role: 'SUPER_ADMIN', ativo: true } });
-        if (adminCount <= 1) {
-          return res.status(400).json({ error: 'Não é possível remover ou desativar o último Super Admin.' });
-        }
-      }
-
-      await prisma.user.update({
-        where: { id: userId },
-        data,
-      });
-
-      return res.json({ message: 'Usuário atualizado com sucesso' });
-    } catch (error) {
-      console.error('Erro ao atualizar usuário:', error);
-      return res.status(500).json({ error: 'Erro ao atualizar usuário' });
+    // Só SUPER_ADMIN real altera contas de equipe interna/raiz
+    if (alvoInterno && !isRoot) {
+      return res.status(403).json({ error: 'Apenas SUPER_ADMIN pode alterar contas de equipe interna.' });
     }
-  }
+
+    const data: any = {};
+    const anteriores: any = {};
+    if (nome !== undefined) {
+      data.nome = nome;
+      anteriores.nome = user.nome;
+    }
+    if (email !== undefined) {
+      const existing = await prisma.user.findUnique({ where: { email } });
+      if (existing && existing.id !== userId) {
+        return res.status(400).json({ error: 'Este email já está em uso por outro usuário' });
+      }
+      data.email = email;
+      anteriores.email = user.email;
+    }
+    if (role !== undefined) {
+      // Mudança de papel é privilégio de raiz; whitelist impede valores arbitrários
+      if (!isRoot) {
+        return res.status(403).json({ error: 'Apenas SUPER_ADMIN pode alterar o papel de um usuário.' });
+      }
+      const ALLOWED_ROLES = ['SUPER_ADMIN', 'USER'];
+      if (!ALLOWED_ROLES.includes(role)) {
+        return res.status(400).json({ error: 'Papel inválido.' });
+      }
+      data.role = role;
+      anteriores.role = user.role;
+    }
+    if (ativo !== undefined) {
+      data.ativo = ativo;
+      anteriores.ativo = user.ativo;
+    }
+
+    // Proteção: nunca remover/desativar o último Super Admin ativo
+    const rebaixando = (role !== undefined && role !== 'SUPER_ADMIN') || (ativo === false);
+    if (user.role === 'SUPER_ADMIN' && rebaixando) {
+      const adminCount = await prisma.user.count({ where: { role: 'SUPER_ADMIN', ativo: true } });
+      if (adminCount <= 1) {
+        return res.status(400).json({ error: 'Não é possível remover ou desativar o último Super Admin.' });
+      }
+    }
+
+    await prisma.user.update({
+      where: { id: userId },
+      data,
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        userId: req.user!.id,
+        storeId: null,
+        acao: 'USER_UPDATED',
+        tabelaAfetada: 'users',
+        dadosAntigos: anteriores,
+        dadosNovos: { userId, ...data },
+      },
+    });
+
+    return res.json({ message: 'Usuário atualizado com sucesso' });
+  }, "atualizar usuário");
 
   async deleteUser(req: Request, res: Response) {
     try {
@@ -1128,6 +1222,16 @@ export class SuperAdminController {
       }
 
       await prisma.user.delete({ where: { id: userId } });
+
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user!.id,
+          storeId: null,
+          acao: 'USER_DELETED',
+          tabelaAfetada: 'users',
+          dadosNovos: { userId, nome: user.nome, email: user.email },
+        },
+      });
 
       return res.json({ message: `Usuário ${user.nome} excluído com sucesso` });
     } catch (error) {
@@ -1146,9 +1250,19 @@ export class SuperAdminController {
         data: { deletedAt: new Date() }
       });
 
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user!.id,
+          storeId: null,
+          acao: 'CLIENT_ARCHIVED',
+          tabelaAfetada: 'clients',
+          dadosNovos: { clientId, nome: client.nomeCompleto },
+        },
+      });
+
       return res.json({ message: 'Cliente arquivado.' });
     } catch (error: any) {
-      return res.status(500).json({ error: error.message || 'Erro ao arquivar cliente' });
+      return res.status(500).json({ error: '' });
     }
   }
 
@@ -1163,9 +1277,19 @@ export class SuperAdminController {
         data: { deletedAt: null }
       });
 
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user!.id,
+          storeId: null,
+          acao: 'CLIENT_RESTORED',
+          tabelaAfetada: 'clients',
+          dadosNovos: { clientId, nome: client.nomeCompleto },
+        },
+      });
+
       return res.json({ message: 'Cliente restaurado.' });
     } catch (error: any) {
-      return res.status(500).json({ error: error.message || 'Erro ao restaurar cliente' });
+      return res.status(500).json({ error: '' });
     }
   }
 
@@ -1175,10 +1299,11 @@ export class SuperAdminController {
       const client = await prisma.client.findUnique({ where: { id: clientId } });
       if (!client) return res.status(404).json({ error: 'Cliente não encontrado' });
 
+      let storeIds: string[] = [];
       await prisma.$transaction(async (tx) => {
         // Apagar dados associados
         const controls = await tx.control.findMany({ where: { clientId }, select: { id: true } });
-        const storeIds = (await tx.store.findMany({ where: { controlId: { in: controls.map(c => c.id) } }, select: { id: true } })).map(s => s.id);
+        storeIds = (await tx.store.findMany({ where: { controlId: { in: controls.map(c => c.id) } }, select: { id: true } })).map(s => s.id);
 
         await tx.sale.deleteMany({ where: { storeId: { in: storeIds } } });
         await tx.store.deleteMany({ where: { controlId: { in: controls.map(c => c.id) } } });
@@ -1189,9 +1314,19 @@ export class SuperAdminController {
         await tx.client.delete({ where: { id: clientId } });
       });
 
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user!.id,
+          storeId: null,
+          acao: 'CLIENT_PURGED',
+          tabelaAfetada: 'clients',
+          dadosNovos: { clientId, nome: client.nomeCompleto, storeIds },
+        },
+      });
+
       return res.json({ message: 'Cliente e todos os dados associados foram excluídos definitivamente.' });
     } catch (error: any) {
-      return res.status(500).json({ error: error.message || 'Erro ao excluir cliente' });
+      return res.status(500).json({ error: '' });
     }
   }
 
@@ -1241,16 +1376,20 @@ export class SuperAdminController {
       const subscription = await prisma.subscription.findUnique({ where: { id } });
       if (!subscription) return res.status(404).json({ error: 'Assinatura não encontrada' });
 
-      if (planId) {
-        const plan = await prisma.plan.findUnique({ where: { id: planId } });
-        if (!plan) return res.status(404).json({ error: 'Plano não encontrado' });
+      if (!planId) {
+        return res.status(400).json({ error: 'O plano é obrigatório e o valor mensalidade é derivado dele.' });
       }
 
+      const plan = await prisma.plan.findUnique({ where: { id: planId } });
+      if (!plan) return res.status(404).json({ error: 'Plano não encontrado' });
+
+      // SEGURANÇA: o valor nunca vem do body — deriva do preço do plano,
+      // impedindo definir preço zero/negativo arbitrário.
       const updated = await prisma.subscription.update({
         where: { id },
         data: {
-          ...(planId && { planId }),
-          ...(valorMensalidade !== undefined && { valorMensalidade }),
+          planId,
+          valorMensalidade: Number(plan.precoMensal),
           ...(dataVencimento && { dataVencimento: parseDate(dataVencimento) }),
         },
       });
@@ -1438,14 +1577,24 @@ export class SuperAdminController {
   // BACKUP (#6)
   // ==========================================
 
+  // SEGURANÇA: backups ficam em pasta própria (fora de /uploads) e só aceitamos
+  // nomes no padrão "backup-<timestamp>.sql" — nada de nomes vindos da URL soltos.
+  private readonly BACKUPS_DIR = path.join(process.cwd(), 'backups');
+  private readonly BACKUP_NAME_PATTERN = /^backup-\d+\.(sql|sql\.gz)$/;
+
+  private safeBackupPath(fileName: string): string | null {
+    if (!this.BACKUP_NAME_PATTERN.test(fileName)) return null; // rejeita "../.env", "x.sql", etc.
+    const resolved = path.resolve(this.BACKUPS_DIR, fileName);  // neutraliza ".." se houver
+    return resolved.startsWith(this.BACKUPS_DIR + path.sep) ? resolved : null;
+  }
+
   async listBackups(req: Request, res: Response) {
     try {
-      const uploadsDir = path.join(process.cwd(), 'uploads');
-      if (!fs.existsSync(uploadsDir)) return res.json([]);
-      const files = fs.readdirSync(uploadsDir)
-        .filter((f: string) => f.endsWith('.sql') || f.endsWith('.sql.gz'))
+      if (!fs.existsSync(this.BACKUPS_DIR)) return res.json([]);
+      const files = fs.readdirSync(this.BACKUPS_DIR)
+        .filter((f: string) => this.BACKUP_NAME_PATTERN.test(f))
         .map((f: string) => {
-          const stat = fs.statSync(path.join(uploadsDir, f));
+          const stat = fs.statSync(path.join(this.BACKUPS_DIR, f));
           return { name: f, size: stat.size, createdAt: (stat.birthtime || stat.mtime || new Date()).toISOString() };
         })
         .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
@@ -1460,9 +1609,22 @@ export class SuperAdminController {
       const backupFile = `backup-${Date.now()}.sql`;
       const dbUrl = process.env.DATABASE_URL;
       if (!dbUrl) return res.status(500).json({ error: 'DATABASE_URL não configurada' });
-      const cmd = `pg_dump "${dbUrl}" > uploads/${backupFile}`;
-      exec(cmd, (error: any) => {
-        if (error) return res.status(500).json({ error: 'Falha ao executar backup' });
+      if (!fs.existsSync(this.BACKUPS_DIR)) {
+        fs.mkdirSync(this.BACKUPS_DIR, { recursive: true });
+      }
+      // SEGURANÇA: spawn passa argumentos separados (nunca monta comando em texto),
+      // então nenhum caractere da URL do banco pode virar um comando.
+      const child = spawn('pg_dump', [dbUrl, '--file', path.join(this.BACKUPS_DIR, backupFile)], {
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let stderr = '';
+      child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+      child.on('error', () => res.status(500).json({ error: 'Falha ao iniciar pg_dump' }));
+      child.on('close', (code: number | null) => {
+        if (code !== 0) {
+          logger.error('Erro ao executar backup:', stderr);
+          return res.status(500).json({ error: 'Falha ao executar backup' });
+        }
         return res.json({ message: 'Backup concluído', file: backupFile });
       });
     } catch (error) {
@@ -1472,8 +1634,9 @@ export class SuperAdminController {
 
   async downloadBackup(req: Request, res: Response) {
     try {
-      const fileName = req.params.file as string;
-      const filePath = path.join(process.cwd(), 'uploads', fileName);
+      // SEGURANÇA: nome validado + caminho confirmado dentro da pasta de backups
+      const filePath = this.safeBackupPath(req.params.file as string);
+      if (!filePath) return res.status(400).json({ error: 'Nome de arquivo inválido.' });
       if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Arquivo não encontrado' });
       return res.download(filePath);
     } catch (error) {
@@ -1483,8 +1646,9 @@ export class SuperAdminController {
 
   async deleteBackup(req: Request, res: Response) {
     try {
-      const fileName = req.params.file as string;
-      const filePath = path.join(process.cwd(), 'uploads', fileName);
+      // SEGURANÇA: mesma validação antes de apagar qualquer arquivo
+      const filePath = this.safeBackupPath(req.params.file as string);
+      if (!filePath) return res.status(400).json({ error: 'Nome de arquivo inválido.' });
       if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Arquivo não encontrado' });
       fs.unlinkSync(filePath);
       return res.json({ message: 'Backup excluído' });
@@ -1568,7 +1732,9 @@ export class SuperAdminController {
         const df = execSync('df -k / | tail -1').toString().trim().split(/\s+/);
         diskTotal = parseInt(df[1]) * 1024 || 0;
         diskFree = parseInt(df[3]) * 1024 || 0;
-      } catch {}
+      } catch (e) {
+        logger.debug("Falha ao coletar métrica de disco", { err: e, action: "system_metrics" });
+      }
 
       // DB connection test
       let dbConnected = false;
@@ -1578,7 +1744,9 @@ export class SuperAdminController {
         dbConnected = true;
         const sizeResult = await prisma.$queryRaw<{ size: string }[]>`SELECT pg_database_size(current_database())::text as size`;
         dbSize = parseInt(sizeResult[0]?.size || '0');
-      } catch {}
+      } catch (e) {
+        logger.debug("Falha ao coletar métrica do banco", { err: e, action: "system_metrics" });
+      }
 
       const storeCount = await prisma.store.count();
       const clientCount = await prisma.client.count();
@@ -1632,7 +1800,7 @@ export class SuperAdminController {
         env: process.env.NODE_ENV || 'development',
       });
     } catch (error: any) {
-      return res.status(500).json({ error: error.message });
+      return res.status(500).json({ error: 'Erro interno do servidor' });
     }
   }
 
@@ -1662,6 +1830,12 @@ export class SuperAdminController {
   // Entra no painel da loja selecionada (Impersonate)
   async impersonate(req: Request, res: Response) {
     try {
+      // Impersonação aninhada é proibida: um token de impersonação não pode
+      // ser usado para impersonar outra loja (evita saltos entre tenants).
+      if (req.user?.isImpersonating) {
+        return res.status(403).json({ error: 'Não é possível impersonar estando em modo de acesso a cliente' });
+      }
+
       const storeId = req.params.storeId as string;
       const store = await prisma.store.findUnique({ where: { id: storeId } });
       if (!store) return res.status(404).json({ error: 'Loja não encontrada' });
@@ -1697,7 +1871,8 @@ export class SuperAdminController {
           targetUserId: targetUserId,
           originalUserId: req.user.id,
           originalStoreId: req.user.storeId || null,
-          originalClientId: req.user.clientId || null
+          originalClientId: req.user.clientId || null,
+          tv: (req.user as any).tv
         },
         JWT_SECRET,
         { expiresIn: "1d" }
@@ -1708,7 +1883,9 @@ export class SuperAdminController {
         select: { nome: true, email: true }
       });
 
-      prisma.impersonationLog.create({
+      // Log aguardado: a trilha de auditoria do "god mode" não pode ser
+      // fire-and-forget (se falhar, a impersonação não é registrada).
+      await prisma.impersonationLog.create({
         data: {
           impersonatorId: req.user.id,
           impersonatorName: impersonator?.nome || null,
@@ -1716,9 +1893,8 @@ export class SuperAdminController {
           targetUserId,
           targetStoreId: storeId,
           storeName: store.nomeFantasia,
+          tipo: 'START',
         },
-      }).catch((err) => {
-        console.error('Erro ao registrar log de impersonação:', err.message);
       });
 
       res.clearCookie('adminToken', { path: '/' });
@@ -1733,62 +1909,77 @@ export class SuperAdminController {
 
       return res.json({ message: "Login na loja efetuado com sucesso" });
     } catch (error: any) {
-      console.error('Erro ao acessar painel da loja:', error.message, error.stack);
+      logger.error('Erro ao acessar painel da loja:', { err: error.message });
       return res.status(500).json({ error: "Erro ao acessar painel da loja" });
     }
   }
 
   // Volta para a sessão normal de Super Admin
-  async revertImpersonation(req: Request, res: Response) {
-    try {
-      if (!req.user?.isImpersonating) {
-        return res.status(400).json({ error: 'Você não está em modo de acesso a cliente' });
-      }
-
-      const originalUser = await prisma.user.findUnique({ 
-        where: { id: req.user.originalUserId },
-        include: {
-          clientAccess: true,
-          storeAccess: true
-        }
-      });
-
-      if (!originalUser) return res.status(404).json({ error: 'Usuário original não encontrado' });
-
-      const JWT_SECRET = process.env.JWT_SECRET;
-      if (!JWT_SECRET) return res.status(500).json({ error: 'JWT_SECRET ausente' });
-
-      const storeId = originalUser.storeAccess?.[0]?.storeId || null;
-      const clientId = originalUser.clientAccess?.[0]?.clientId || null;
-
-      const token = jwt.sign(
-        { 
-          id: originalUser.id, 
-          storeId,
-          clientId,
-          role: originalUser.role 
-        },
-        JWT_SECRET,
-        { expiresIn: "7d" }
-      );
-
-      res.clearCookie('authToken', { path: '/' });
-
-      const cookieName = originalUser.role === 'SUPER_ADMIN' ? 'adminToken' : 'authToken';
-      res.cookie(cookieName, token, {
-        httpOnly: true,
-        path: '/',
-        sameSite: "lax",
-        secure: process.env.NODE_ENV === "production",
-        maxAge: 7 * 24 * 60 * 60 * 1000,
-      });
-
-      return res.json({ message: "Sessão de Super Admin restaurada com sucesso" });
-    } catch (error) {
-      console.error('Erro ao reverter sessão:', error);
-      return res.status(500).json({ error: "Erro ao reverter sessão" });
+  revertImpersonation = asyncHandler(async (req: Request, res: Response) => {
+    // Só quem detém um token de impersonação válido (isImpersonating:true)
+    // pode reverter — um token de sessão normal não consegue amplificar
+    // privilégio por aqui.
+    if (!req.user?.isImpersonating) {
+      return res.status(403).json({ error: 'Acesso negado. Você não está em modo de acesso a cliente' });
     }
-  }
+
+    const originalUser = await prisma.user.findUnique({ 
+      where: { id: req.user.originalUserId },
+      include: {
+        clientAccess: true,
+        storeAccess: true
+      }
+    });
+
+    if (!originalUser) return res.status(404).json({ error: 'Usuário original não encontrado' });
+
+    const JWT_SECRET = process.env.JWT_SECRET;
+    if (!JWT_SECRET) return res.status(500).json({ error: 'JWT_SECRET ausente' });
+
+    const storeId = originalUser.storeAccess?.[0]?.storeId || null;
+    const clientId = originalUser.clientAccess?.[0]?.clientId || null;
+
+    const token = jwt.sign(
+      { 
+        id: originalUser.id, 
+        storeId,
+        clientId,
+        role: originalUser.role,
+        tv: (originalUser as any).tokenVersion
+      },
+      JWT_SECRET,
+      { expiresIn: "12h" }
+    );
+
+    res.clearCookie('authToken', { path: '/' });
+
+    const cookieName = originalUser.role === 'SUPER_ADMIN' ? 'adminToken' : 'authToken';
+    res.cookie(cookieName, token, {
+      httpOnly: true,
+      path: '/',
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      maxAge: 12 * 60 * 60 * 1000,
+    });
+
+    // Registra a saída do god mode (trilha completa: START + REVERT)
+    await prisma.impersonationLog.create({
+      data: {
+        impersonatorId: originalUser.id,
+        impersonatorName: originalUser.nome,
+        impersonatorEmail: originalUser.email,
+        targetUserId: req.user.targetUserId || null,
+        targetStoreId: req.user.storeId || null,
+        storeName: req.user.storeId || null,
+        tipo: 'REVERT',
+        endedAt: new Date(),
+      },
+    }).catch((err) => {
+      logger.error('Erro ao registrar log de impersonação:', { err: err.message });
+    });
+
+    res.json({ message: "Sessão de Super Admin restaurada com sucesso" });
+  }, "reverter sessão");
 
   // Histórico de acessos em God Mode (impersonação)
   async getImpersonationLogs(req: Request, res: Response) {
@@ -1803,7 +1994,7 @@ export class SuperAdminController {
 
       return res.json(logs);
     } catch (error: any) {
-      console.error('Erro ao buscar logs de impersonação:', error.message);
+      logger.error('Erro ao buscar logs de impersonação:', { err: error.message });
       return res.status(500).json({ error: 'Erro ao buscar logs de impersonação' });
     }
   }
@@ -1873,106 +2064,81 @@ export class SuperAdminController {
         store: { id: result.store.id, nome: result.store.nomeFantasia }
       });
     } catch (error: any) {
-      console.error('Erro ao criar controle PF:', error.message, error.stack);
+      logger.error('Erro ao criar controle PF:', { err: error.message });
       return res.status(500).json({ error: 'Erro ao criar controle PF' });
     }
   }
 
-  async updateStoreFeatures(req: Request, res: Response) {
-    try {
-      const storeId = req.params.id as string;
+  updateStoreFeatures = asyncHandler(async (req: Request, res: Response) => {
+    const storeId = req.params.storeId as string;
 
-      const store = await prisma.store.findUnique({ where: { id: storeId } });
-      if (!store) return res.status(404).json({ error: 'Loja não encontrada' });
+    const store = await prisma.store.findUnique({ where: { id: storeId } });
+    if (!store) return res.status(404).json({ error: 'Loja não encontrada' });
 
-      if (req.method === 'GET') {
-        const features = store.features ? JSON.parse(store.features) : {};
-        return res.json({ features });
-      }
-
-      const { features } = req.body;
-
-      const updated = await prisma.store.update({
-        where: { id: storeId },
-        data: { features: features ? JSON.stringify(features) : null },
-      });
-
-      return res.json({ message: 'Features atualizadas', features: features || {} });
-    } catch (error) {
-      console.error('Erro ao atualizar features da loja:', error);
-      return res.status(500).json({ error: 'Erro interno' });
+    if (req.method === 'GET') {
+      const features = store.features ? JSON.parse(store.features) : {};
+      return res.json({ features });
     }
-  }
 
-  async triggerBilling(req: Request, res: Response) {
-    try {
-      const plano = await buildPlan();
-      const { jaExecutadoHoje, resultado } = await executePlan(plano, 'manual');
-      if (!jaExecutadoHoje) {
-        await enviarRelatorio(plano, resultado, 'manual');
-      }
+    const { features } = req.body;
 
-      const total = resultado?.detalhes?.length || 0;
-      return res.json({
-        message: `Varredura concluída. ${resultado?.marcadasVencido || 0} assinatura(s) marcada(s) para VENCIDO, ${resultado?.notificacoesEnviadas || 0} e-mail(s) enviado(s).`,
-        total,
-        atualizadas: resultado?.marcadasVencido || 0,
-        jaExecutadoHoje,
-      });
-    } catch (error) {
-      console.error('Erro na varredura financeira:', error);
-      return res.status(500).json({ error: 'Erro ao executar varredura financeira' });
+    const updated = await prisma.store.update({
+      where: { id: storeId },
+      data: { features: features ? JSON.stringify(features) : null },
+    });
+
+    return res.json({ message: 'Features atualizadas', features: features || {} });
+  }, "atualizar features da loja");
+
+  triggerBilling = asyncHandler(async (req: Request, res: Response) => {
+    const plano = await buildPlan();
+    const { jaExecutadoHoje, resultado } = await executePlan(plano, 'manual');
+    if (!jaExecutadoHoje) {
+      await enviarRelatorio(plano, resultado, 'manual');
     }
-  }
+
+    const total = resultado?.detalhes?.length || 0;
+    return res.json({
+      message: `Varredura concluída. ${resultado?.marcadasVencido || 0} assinatura(s) marcada(s) para VENCIDO, ${resultado?.notificacoesEnviadas || 0} e-mail(s) enviado(s).`,
+      total,
+      atualizadas: resultado?.marcadasVencido || 0,
+      jaExecutadoHoje,
+    });
+  }, "executar varredura financeira");
 
   // Dry-run da varredura: simula sem executar nada
-  async getScanPlan(req: Request, res: Response) {
-    try {
-      const plano = await buildPlan();
-      return res.json(plano);
-    } catch (error) {
-      console.error('Erro ao montar plano de varredura:', error);
-      return res.status(500).json({ error: 'Erro ao montar plano de varredura' });
-    }
-  }
+  getScanPlan = asyncHandler(async (req: Request, res: Response) => {
+    const plano = await buildPlan();
+    return res.json(plano);
+  }, "montar plano de varredura");
 
   // Executa a varredura a partir do plano (com confirmação por senha na rota)
-  async executeScan(req: Request, res: Response) {
-    try {
-      const plano = await buildPlan();
-      const { jaExecutadoHoje, resultado } = await executePlan(plano, `manual:${req.user?.id}`);
-      if (!jaExecutadoHoje) {
-        await enviarRelatorio(plano, resultado, `manual:${req.user?.id}`);
-      }
-
-      return res.json({
-        jaExecutadoHoje,
-        resultado,
-      });
-    } catch (error) {
-      console.error('Erro ao executar varredura:', error);
-      return res.status(500).json({ error: 'Erro ao executar varredura' });
+  executeScan = asyncHandler(async (req: Request, res: Response) => {
+    const plano = await buildPlan();
+    const { jaExecutadoHoje, resultado } = await executePlan(plano, `manual:${req.user?.id}`);
+    if (!jaExecutadoHoje) {
+      await enviarRelatorio(plano, resultado, `manual:${req.user?.id}`);
     }
-  }
+
+    return res.json({
+      jaExecutadoHoje,
+      resultado,
+    });
+  }, "executar varredura");
 
   // Histórico de execuções da varredura
-  async getScanRuns(req: Request, res: Response) {
-    try {
-      const runs = await prisma.scanRun.findMany({
-        orderBy: { data: 'desc' },
-        take: 10,
-        select: {
-          id: true,
-          data: true,
-          disparadoPor: true,
-          status: true,
-          resultado: true,
-        },
-      });
-      return res.json(runs);
-    } catch (error) {
-      console.error('Erro ao listar execuções da varredura:', error);
-      return res.status(500).json({ error: 'Erro ao listar execuções da varredura' });
-    }
-  }
+  getScanRuns = asyncHandler(async (req: Request, res: Response) => {
+    const runs = await prisma.scanRun.findMany({
+      orderBy: { data: 'desc' },
+      take: 10,
+      select: {
+        id: true,
+        data: true,
+        disparadoPor: true,
+        status: true,
+        resultado: true,
+      },
+    });
+    return res.json(runs);
+  }, "listar execuções da varredura");
 }

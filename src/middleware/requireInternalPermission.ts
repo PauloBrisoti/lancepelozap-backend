@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import { logger } from '../lib/logger';
 import { prisma } from "../lib/prisma";
 
 const methodToAction = (req: Request): string => {
@@ -83,8 +84,12 @@ export const requireInternalPermission = (moduleName: string, requiredLevel: "FU
 
       const action = methodToAction(req);
 
-      // VIEW cobre leitura
+      // VIEW cobre leitura — mas apenas quando a rota exige VIEW. Se a rota
+      // exige FULL, leitura com permissão VIEW também é bloqueada.
       if (permission.accessLevel === "VIEW" && action === "read") {
+        if (requiredLevel === "FULL") {
+          return res.status(403).json({ error: "Acesso somente leitura. Ação não permitida." });
+        }
         return next();
       }
 
@@ -99,7 +104,7 @@ export const requireInternalPermission = (moduleName: string, requiredLevel: "FU
 
       return res.status(403).json({ error: "Você não tem acesso a este módulo." });
     } catch (error) {
-      console.error(error);
+      logger.error('Erro interno de autorização.', error);
       res.status(500).json({ error: "Erro interno de autorização." });
     }
   };

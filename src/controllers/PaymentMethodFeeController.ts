@@ -1,9 +1,10 @@
 import { Request, Response } from 'express';
+import { logger } from '../lib/logger';
+import { asyncHandler } from "../lib/asyncHandler";
 import { prisma } from '../lib/prisma';
 
 export class PaymentMethodFeeController {
-  async list(req: Request, res: Response) {
-    try {
+  list = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId;
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
@@ -13,14 +14,10 @@ export class PaymentMethodFeeController {
       });
 
       res.json(fees);
-    } catch (error: any) {
-      console.error('Erro ao listar taxas:', error);
-      res.status(500).json({ message: error.message || 'Erro ao listar taxas' });
-    }
-  }
+    
+  }, "listar");
 
-  async create(req: Request, res: Response) {
-    try {
+  create = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId;
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
@@ -45,14 +42,10 @@ export class PaymentMethodFeeController {
       });
 
       res.status(201).json(fee);
-    } catch (error: any) {
-      console.error('Erro ao criar taxa:', error);
-      res.status(500).json({ message: error.message || 'Erro ao criar taxa' });
-    }
-  }
+    
+  }, "criar");
 
-  async update(req: Request, res: Response) {
-    try {
+  update = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId;
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
@@ -76,14 +69,10 @@ export class PaymentMethodFeeController {
       });
 
       res.json(updated);
-    } catch (error: any) {
-      console.error('Erro ao atualizar taxa:', error);
-      res.status(500).json({ message: error.message || 'Erro ao atualizar taxa' });
-    }
-  }
+    
+  }, "atualizar");
 
-  async remove(req: Request, res: Response) {
-    try {
+  remove = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId;
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
@@ -96,9 +85,6 @@ export class PaymentMethodFeeController {
       await prisma.paymentMethodFee.delete({ where: { id: String(id) } });
 
       res.json({ message: 'Taxa removida com sucesso' });
-    } catch (error: any) {
-      console.error('Erro ao remover taxa:', error);
-      res.status(500).json({ message: error.message || 'Erro ao remover taxa' });
-    }
-  }
+    
+  }, "remover");
 }

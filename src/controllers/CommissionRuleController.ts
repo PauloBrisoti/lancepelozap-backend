@@ -1,9 +1,19 @@
 import { Request, Response } from 'express';
+import { logger } from '../lib/logger';
+import { asyncHandler } from "../lib/asyncHandler";
 import { prisma } from '../lib/prisma';
 
 export class CommissionRuleController {
-  async list(req: Request, res: Response) {
-    try {
+  // VENDEDOR/CAIXA não podem criar/alterar/excluir regras de comissão
+  private async isRestrictedRole(storeId: string, userId: string): Promise<boolean> {
+    const access = await prisma.storeUserAccess.findUnique({
+      where: { storeId_userId: { storeId, userId } },
+      select: { role: true }
+    });
+    return !!access && (access.role === 'VENDEDOR' || access.role === 'CAIXA');
+  }
+
+  list = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId;
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
@@ -16,15 +26,24 @@ export class CommissionRuleController {
         orderBy: { id: 'asc' },
       });
 
-      res.json(rules);
-    } catch (error: any) {
-      console.error('Erro ao listar regras de comissão:', error);
-      res.status(500).json({ message: error.message || 'Erro ao listar regras' });
-    }
-  }
+      // VENDEDOR/CAIXA vê apenas as próprias regras de comissão
+      const userId = req.user?.id;
+      if (userId) {
+        const access = await prisma.storeUserAccess.findUnique({
+          where: { storeId_userId: { storeId, userId } },
+          select: { role: true }
+        });
+        if (access && (access.role === 'VENDEDOR' || access.role === 'CAIXA')) {
+          const own = rules.filter(r => r.userId === userId);
+          return res.json(own);
+        }
+      }
 
-  async create(req: Request, res: Response) {
-    try {
+      res.json(rules);
+    
+  }, "listar");
+
+  create = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId;
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
@@ -32,6 +51,10 @@ export class CommissionRuleController {
 
       if (!userId || percentual === undefined) {
         return res.status(400).json({ message: 'userId e percentual são obrigatórios' });
+      }
+
+      if (req.user?.id && await this.isRestrictedRole(storeId, req.user.id)) {
+        return res.status(403).json({ message: 'Apenas gestores podem configurar comissões' });
       }
 
       const user = await prisma.storeUserAccess.findUnique({
@@ -54,14 +77,10 @@ export class CommissionRuleController {
       });
 
       res.status(201).json(rule);
-    } catch (error: any) {
-      console.error('Erro ao criar regra de comissão:', error);
-      res.status(500).json({ message: error.message || 'Erro ao criar regra' });
-    }
-  }
+    
+  }, "criar");
 
-  async update(req: Request, res: Response) {
-    try {
+  update = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId;
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
@@ -72,6 +91,10 @@ export class CommissionRuleController {
         where: { id: String(id), storeId }
       });
       if (!existing) return res.status(404).json({ message: 'Regra não encontrada' });
+
+      if (req.user?.id && await this.isRestrictedRole(storeId, req.user.id)) {
+        return res.status(403).json({ message: 'Apenas gestores podem configurar comissões' });
+      }
 
       const updated = await prisma.commissionRule.update({
         where: { id: String(id) },
@@ -87,14 +110,10 @@ export class CommissionRuleController {
       });
 
       res.json(updated);
-    } catch (error: any) {
-      console.error('Erro ao atualizar regra de comissão:', error);
-      res.status(500).json({ message: error.message || 'Erro ao atualizar regra' });
-    }
-  }
+    
+  }, "atualizar");
 
-  async remove(req: Request, res: Response) {
-    try {
+  remove = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId;
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
@@ -104,12 +123,13 @@ export class CommissionRuleController {
       });
       if (!existing) return res.status(404).json({ message: 'Regra não encontrada' });
 
+      if (req.user?.id && await this.isRestrictedRole(storeId, req.user.id)) {
+        return res.status(403).json({ message: 'Apenas gestores podem configurar comissões' });
+      }
+
       await prisma.commissionRule.delete({ where: { id: String(id) } });
 
       res.json({ message: 'Regra removida com sucesso' });
-    } catch (error: any) {
-      console.error('Erro ao remover regra de comissão:', error);
-      res.status(500).json({ message: error.message || 'Erro ao remover regra' });
-    }
-  }
+    
+  }, "remover");
 }

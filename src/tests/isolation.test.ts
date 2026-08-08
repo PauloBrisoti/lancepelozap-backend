@@ -68,4 +68,50 @@ describe('Isolamento de Dados', () => {
     expect(resA.body).toHaveLength(1);
     expect(Number(resA.body[0].valorTotalBruto)).toBe(100);
   });
+
+  it('IDOR: venda com customerId de OUTRA loja é rejeitada', async () => {
+    // Cliente cadastrado apenas na loja B
+    const foreignCustomer = await prisma.customer.create({
+      data: {
+        storeId: clientB.store.id,
+        nomeCompleto: 'Cliente Secreto da Loja B',
+        telefoneWhatsapp: '11988887777',
+      },
+    });
+
+    // Produto da loja A para a venda
+    const categoryA = await prisma.category.create({
+      data: { nome: 'Categoria Teste A', storeId: clientA.store.id },
+    });
+    const productA = await prisma.product.create({
+      data: {
+        nome: 'Produto Teste A',
+        storeId: clientA.store.id,
+        categoryId: categoryA.id,
+        precoCusto: 10,
+        precoVendaSugerido: 50,
+        qtdEstoqueAtual: 100,
+      },
+    });
+
+    // Loja A tenta vender referenciando o cliente da loja B
+    const resA = await request(app)
+      .post('/api/sales')
+      .set('Cookie', [`authToken=${tokenA}`])
+      .set('x-store-id', clientA.store.id)
+      .send({
+        itens: [{ productId: productA.id, quantidade: 1, precoUnitarioVendido: 50 }],
+        formaPagamento: 'DINHEIRO',
+        customerId: foreignCustomer.id,
+      });
+
+    expect(resA.status).toBe(400);
+    expect(resA.body.message).toMatch(/Cliente não encontrado nesta loja/);
+
+    // Nenhuma venda foi criada com o cliente alheio
+    const sale = await prisma.sale.findFirst({
+      where: { storeId: clientA.store.id, customerId: foreignCustomer.id },
+    });
+    expect(sale).toBeNull();
+  });
 });

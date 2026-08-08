@@ -16,6 +16,7 @@ productRouter.use(requireWorkspaceType('PJ'));
 productRouter.use(autoAudit());
 
 productRouter.get("/", productController.list);
+productRouter.get("/by-ean/:ean", productController.findByEan);
 productRouter.post("/",
   requireStorePermission('gerenciar_produtos'),
   requirePlanFeature('estoque'),

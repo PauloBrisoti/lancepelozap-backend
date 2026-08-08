@@ -1,11 +1,13 @@
 import { Request, Response } from 'express';
 import { PlanilhaParserService } from '../services/PlanilhaParserService';
 import { ok, fail } from '../lib/response';
+import { asyncHandler } from "../lib/asyncHandler";
 import fs from 'fs';
 
 export class PlanilhaController {
 
-  async preview(req: Request, res: Response) {
+  preview = asyncHandler(async (req: Request, res: Response) => {
+
     try {
       if (!req.file) return fail(res, 'Arquivo não fornecido', 400);
 
@@ -21,11 +23,12 @@ export class PlanilhaController {
       if (req.file && fs.existsSync(req.file.path)) {
         fs.unlinkSync(req.file.path);
       }
-      return fail(res, error.message || 'Erro ao processar preview', 400);
+      return fail(res, '', 400);
     }
-  }
+  }, "visualizar");
 
-  async import(req: Request, res: Response) {
+  import = asyncHandler(async (req: Request, res: Response) => {
+
     try {
       const storeId = req.user?.storeId;
       const userId = req.user?.id;
@@ -60,7 +63,7 @@ export class PlanilhaController {
       });
     } catch (error: any) {
       if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
-      return fail(res, error.message || 'Erro ao importar planilha', 400);
+      return fail(res, '', 400);
     }
-  }
+  }, "importar");
 }

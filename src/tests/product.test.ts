@@ -103,7 +103,7 @@ describe('Products CRUD (integração)', () => {
     expect(res.status).toBe(204);
 
     const product = await prisma.product.findUnique({ where: { id } });
-    expect(product?.deletedAt).not.toBeNull();
+    expect(product).toBeNull(); // exclusão é física
   });
 
   it('GET /api/products — sem auth retorna 401', async () => {

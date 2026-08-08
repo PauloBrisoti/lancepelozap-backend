@@ -3,6 +3,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { requireAuth } from '../middleware/auth';
+import { validateUpload, SPREADSHEET_KINDS } from '../lib/fileValidation';
 import { PlanilhaController } from '../controllers/PlanilhaController';
 
 const storage = multer.diskStorage({
@@ -12,7 +13,8 @@ const storage = multer.diskStorage({
     cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
-    cb(null, `planilha-${Date.now()}${path.extname(file.originalname)}`);
+    const storeId = (req as any).user?.storeId || 'sem-loja';
+    cb(null, `${storeId}--planilha-${Date.now()}${path.extname(file.originalname)}`);
   }
 });
 
@@ -36,9 +38,9 @@ const controller = new PlanilhaController();
 router.use(requireAuth);
 
 // POST /api/planilha/preview — Preview sem salvar
-router.post('/preview', upload.single('file'), controller.preview.bind(controller));
+router.post('/preview', upload.single('file'), validateUpload(SPREADSHEET_KINDS), controller.preview.bind(controller));
 
 // POST /api/planilha/import — Importar com checkpoint
-router.post('/import', upload.single('file'), controller.import.bind(controller));
+router.post('/import', upload.single('file'), validateUpload(SPREADSHEET_KINDS), controller.import.bind(controller));
 
 export { router as planilhaRoutes };

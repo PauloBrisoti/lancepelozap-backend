@@ -1,24 +1,20 @@
 import { Request, Response } from 'express';
+import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 import { auditLog } from '../lib/audit';
 import { buildDateRange, getTimezone, parseDate } from '../lib/dateUtils';
 import { toZonedTime } from 'date-fns-tz';
+import { asyncHandler } from "../lib/asyncHandler";
+import { StockMovementService } from '../services/StockMovementService';
 
 async function deleteSaleTree(tx: any, sale: { id: string; saleItems: { id: string; productId: string; quantidade: any }[] }, storeId: string, userId: string) {
   for (const item of sale.saleItems) {
-    await tx.product.update({
-      where: { id: item.productId },
-      data: { qtdEstoqueAtual: { increment: Number(item.quantidade) } },
-    });
-    await tx.stockMovement.create({
-      data: {
-        storeId, productId: item.productId, userId,
-        tipo: 'ENTRADA',
-        quantidade: Number(item.quantidade),
-        saldoAnterior: 0, saldoPosterior: 0,
-        referenciaId: sale.id,
-        observacao: `Estorno por exclusão de venda #${sale.id}`,
-      },
+    await StockMovementService.movimentar(tx, {
+      storeId, productId: item.productId, userId,
+      tipo: 'ENTRADA',
+      quantidade: Number(item.quantidade),
+      referenciaId: sale.id,
+      observacao: 'Estorno exclusão de venda',
     });
   }
 
@@ -51,8 +47,7 @@ async function deleteSaleTree(tx: any, sale: { id: string; saleItems: { id: stri
 export class FinanceController {
   
   // 0. CATEGORIAS FINANCEIRAS
-  static async listCategories(req: Request, res: Response) {
-    try {
+  static listCategories = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       const store = await prisma.store.findUnique({
         where: { id: storeId },
@@ -71,14 +66,10 @@ export class FinanceController {
         orderBy: { nome: 'asc' }
       });
       return res.json(categories);
-    } catch (error) {
-      console.error('Erro ao listar categorias financeiras:', error);
-      return res.status(500).json({ message: 'Erro interno do servidor' });
-    }
-  }
+    
+  }, "listar categorias");
 
-  static async createCategory(req: Request, res: Response) {
-    try {
+  static createCategory = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       const { nome, tipo } = req.body;
       if (!nome || !tipo) {
@@ -88,15 +79,11 @@ export class FinanceController {
         data: { nome, tipo, storeId }
       });
       return res.status(201).json(category);
-    } catch (error) {
-      console.error('Erro ao criar categoria financeira:', error);
-      return res.status(500).json({ message: 'Erro interno do servidor' });
-    }
-  }
+    
+  }, "criar categoria");
 
   // 1. DASHBOARD E SALDOS
-  static async getDashboard(req: Request, res: Response) {
-    try {
+  static getDashboard = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ message: 'Não autorizado' });
 
@@ -207,6 +194,15 @@ export class FinanceController {
         if (t.tipo === 'SAIDA') despesasMes += Number(t.valor);
       });
 
+      const comissaoPagasMes = await prisma.commissionPayment.aggregate({
+        where: {
+          storeId,
+          status: 'PAGO',
+          pagoEm: { gte: startOfPeriod, lte: endOfPeriod }
+        },
+        _sum: { totalValor: true }
+      });
+
       return res.json({
         saldoTotal,
         saldoProjetado,
@@ -214,18 +210,15 @@ export class FinanceController {
         totalAVencer,
         receitasMes,
         despesasMes,
+        comissaoPagasMes: Number(comissaoPagasMes._sum.totalValor || 0),
         wallets,
         devedoresAtrasados
       });
-    } catch (error) {
-      console.error('Erro no dashboard:', error);
-      return res.status(500).json({ message: 'Erro interno do servidor' });
-    }
-  }
+    
+  }, "obter dashboard");
 
   // 2. TRANSAÇÕES
-  static async getTransactions(req: Request, res: Response) {
-    try {
+  static getTransactions = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ message: 'Não autorizado' });
 
@@ -258,14 +251,10 @@ export class FinanceController {
       });
 
       return res.json(transactions);
-    } catch (error) {
-      console.error('Erro nas transações:', error);
-      return res.status(500).json({ message: 'Erro interno do servidor' });
-    }
-  }
+    
+  }, "obter transactions");
 
-  static async addTransaction(req: Request, res: Response) {
-    try {
+  static addTransaction = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ message: 'Não autorizado' });
 
@@ -408,14 +397,10 @@ export class FinanceController {
       });
 
       return res.status(201).json(transaction);
-    } catch (error) {
-      console.error('Erro ao adicionar transação:', error);
-      return res.status(500).json({ message: 'Erro interno do servidor' });
-    }
-  }
+    
+  }, "criar transaction");
 
-  static async updateTransaction(req: Request, res: Response) {
-    try {
+  static updateTransaction = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       const id = req.params.id as string;
       const { walletId, tipo, valor, descricao, categoria, dataTransacao } = req.body;
@@ -481,15 +466,11 @@ export class FinanceController {
       });
 
       return res.json(transaction);
-    } catch (error) {
-      console.error('Erro ao atualizar transação:', error);
-      return res.status(500).json({ message: 'Erro interno do servidor' });
-    }
-  }
+    
+  }, "atualizar transaction");
 
   // 3. CONTAS A RECEBER (FIADO)
-  static async getReceivables(req: Request, res: Response) {
-    try {
+  static getReceivables = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ message: 'Não autorizado' });
 
@@ -555,14 +536,10 @@ export class FinanceController {
       });
 
       return res.json(enriched);
-    } catch (error) {
-      console.error('Erro em getReceivables:', error);
-      return res.status(500).json({ message: 'Erro interno do servidor' });
-    }
-  }
+    
+  }, "obter receivables");
 
-  static async payReceivable(req: Request, res: Response) {
-    try {
+  static payReceivable = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ message: 'Não autorizado' });
       
@@ -654,14 +631,10 @@ export class FinanceController {
         valorPago: novoTotalPago,
         saldoRestante: Math.max(0, valorParcelaOriginal - novoTotalPago),
       });
-    } catch (error) {
-      console.error('Erro em payReceivable:', error);
-      return res.status(500).json({ message: 'Erro interno do servidor' });
-    }
-  }
+    
+  }, "pagar receivable");
 
-  static async renegotiateReceivable(req: Request, res: Response) {
-    try {
+  static renegotiateReceivable = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       const userId = req.user?.id as string;
       if (!storeId || !userId) return res.status(401).json({ message: 'Não autorizado' });
@@ -749,15 +722,11 @@ export class FinanceController {
       });
 
       return res.json({ message: 'Parcelas renegociadas com sucesso', receivables: result });
-    } catch (error) {
-      console.error('Erro em renegotiateReceivable:', error);
-      return res.status(500).json({ message: 'Erro interno do servidor' });
-    }
-  }
+    
+  }, "renegotiate receivable");
 
   // 4. CONTAS A PAGAR
-  static async getPayables(req: Request, res: Response) {
-    try {
+  static getPayables = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ message: 'Não autorizado' });
 
@@ -768,14 +737,10 @@ export class FinanceController {
       });
 
       return res.json(payables);
-    } catch (error) {
-      console.error('Erro em getPayables:', error);
-      return res.status(500).json({ message: 'Erro interno do servidor' });
-    }
-  }
+    
+  }, "obter payables");
 
-  static async createPayable(req: Request, res: Response) {
-    try {
+  static createPayable = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ message: 'Não autorizado' });
 
@@ -848,14 +813,10 @@ export class FinanceController {
       });
 
       return res.status(201).json(payable);
-    } catch (error) {
-      console.error('Erro em createPayable:', error);
-      return res.status(500).json({ message: 'Erro interno do servidor' });
-    }
-  }
+    
+  }, "criar payable");
 
-  static async updatePayable(req: Request, res: Response) {
-    try {
+  static updatePayable = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ message: 'Não autorizado' });
 
@@ -880,14 +841,10 @@ export class FinanceController {
       });
 
       return res.json(updated);
-    } catch (error) {
-      console.error('Erro em updatePayable:', error);
-      return res.status(500).json({ message: 'Erro interno do servidor' });
-    }
-  }
+    
+  }, "atualizar payable");
 
-  static async payPayable(req: Request, res: Response) {
-    try {
+  static payPayable = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ message: 'Não autorizado' });
 
@@ -934,14 +891,10 @@ export class FinanceController {
       });
 
       return res.json({ message: 'Pagamento registrado com sucesso' });
-    } catch (error) {
-      console.error('Erro em payPayable:', error);
-      return res.status(500).json({ message: 'Erro interno do servidor' });
-    }
-  }
+    
+  }, "pagar payable");
   // 6. BULK ACTIONS
-  static async bulkAction(req: Request, res: Response) {
-    try {
+  static bulkAction = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       const userId = req.user?.id as string;
       if (!storeId || !userId) return res.status(401).json({ message: 'Não autorizado' });
@@ -1065,9 +1018,6 @@ export class FinanceController {
       });
 
       return res.json({ message: 'Ação em massa executada com sucesso' });
-    } catch (error: any) {
-      console.error('Erro no bulkAction:', error?.message || error);
-      return res.status(500).json({ error: error?.message || 'Erro interno do servidor' });
-    }
-  }
+    
+  }, "bulk action");
 }

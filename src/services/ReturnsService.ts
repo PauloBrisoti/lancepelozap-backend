@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { StockMovementService } from './StockMovementService';
 
 export class ReturnsServiceError extends Error {
   constructor(public readonly httpCode: 400 | 404, message: string) {
@@ -50,31 +51,17 @@ export class ReturnsService {
     return prisma.$transaction(async (tx) => {
       // Restock e StockMovements para cada item, além do estorno de comissão
       for (const item of ret.items) {
-        const product = await tx.product.findUnique({ where: { id: item.productId } });
-        if (!product) continue;
-
-        const qtd = Number(item.quantidade);
-        const saldoAnterior = Number(product.qtdEstoqueAtual);
-        const saldoPosterior = saldoAnterior + qtd;
-
-        await tx.product.update({
-          where: { id: product.id },
-          data: { qtdEstoqueAtual: saldoPosterior },
+        const result = await StockMovementService.movimentar(tx, {
+          storeId,
+          productId: item.productId,
+          userId,
+          tipo: 'ENTRADA',
+          quantidade: Number(item.quantidade),
+          referenciaId: ret.id,
+          observacao: `Devolução #${ret.id.slice(0, 8)}`,
+          skipSeProdutoInexistente: true,
         });
-
-        await tx.stockMovement.create({
-          data: {
-            storeId,
-            productId: product.id,
-            userId,
-            tipo: 'ENTRADA',
-            quantidade: qtd,
-            saldoAnterior,
-            saldoPosterior,
-            referenciaId: ret.id,
-            observacao: `Devolução #${ret.id.slice(0, 8)}`,
-          },
-        });
+        if (!result) continue;
 
         // Estorna a comissão proporcional à quantidade devolvida deste produto
         const saleItem = ret.sale.saleItems.find((si) => si.productId === item.productId);
@@ -82,7 +69,7 @@ export class ReturnsService {
           const qtdOriginal = Number(saleItem.quantidade);
           const comissaoOriginal = Number(saleItem.comissaoVendedorValor);
           const comissaoPorUnidade = comissaoOriginal / qtdOriginal;
-          const comissaoEstornar = Math.min(comissaoPorUnidade * qtd, comissaoOriginal);
+          const comissaoEstornar = Math.min(comissaoPorUnidade * Number(item.quantidade), comissaoOriginal);
 
           await tx.saleItem.update({
             where: { id: saleItem.id },

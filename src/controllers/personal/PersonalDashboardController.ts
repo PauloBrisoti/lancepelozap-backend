@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { logger } from '../../lib/logger';
 import { prisma } from '../../lib/prisma';
 import { ensureCategories, getCycleRange, getEffectiveUserId } from './helpers';
 
@@ -152,7 +153,7 @@ export class PersonalDashboardController {
                 monthlyBudgetLimit,
             });
     } catch (error) {
-      console.error('Erro no dashboard PF:', error);
+      logger.error('Erro no dashboard PF:', error);
       return res.status(500).json({ error: 'Erro interno' });
     }
   }
@@ -195,7 +196,7 @@ export class PersonalDashboardController {
 
       return res.json(resultado);
     } catch (error) {
-      console.error('Erro no resumo de orçamentos PF:', error);
+      logger.error('Erro no resumo de orçamentos PF:', error);
       return res.status(500).json({ error: 'Erro interno' });
     }
   }
@@ -213,7 +214,7 @@ export class PersonalDashboardController {
         monthlyBudgetLimit: Number(user?.monthlyBudgetLimit || 0),
       });
     } catch (error) {
-      console.error('Erro ao buscar config de ciclo:', error);
+      logger.error('Erro ao buscar config de ciclo:', error);
       return res.status(500).json({ error: 'Erro interno' });
     }
   }
@@ -239,7 +240,7 @@ export class PersonalDashboardController {
       });
       return res.json({ billingCycleStartDay: billingCycleStartDay ?? 1, monthlyBudgetLimit });
     } catch (error) {
-      console.error('Erro ao atualizar config de ciclo:', error);
+      logger.error('Erro ao atualizar config de ciclo:', error);
       return res.status(500).json({ error: 'Erro interno' });
     }
   }
@@ -262,7 +263,7 @@ export class PersonalDashboardController {
 
       return res.json(budget);
     } catch (error) {
-      console.error('Erro ao salvar orçamento PF:', error);
+      logger.error('Erro ao salvar orçamento PF:', error);
       return res.status(500).json({ error: 'Erro interno' });
     }
   }

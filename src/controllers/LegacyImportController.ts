@@ -1,10 +1,13 @@
 import { Request, Response } from 'express';
+import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 import ExcelJS from 'exceljs';
+import { asyncHandler } from "../lib/asyncHandler";
 import fs from 'fs';
 
 export class LegacyImportController {
-  static async importLegacy(req: Request, res: Response) {
+  static importLegacy = asyncHandler(async (req: Request, res: Response) => {
+
     try {
       const storeId = req.user?.storeId as string;
       const userId = req.user?.id as string;
@@ -74,11 +77,11 @@ export class LegacyImportController {
       });
 
     } catch (error: any) {
-      console.error(error);
+      logger.error(error);
       if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
-      return res.status(500).json({ error: error.message || 'Erro interno ao processar a planilha.' });
+      return res.status(500).json({ error: '' });
     }
-  }
+  }, "importar legacy");
 
   // --- HELPER METHODS ---
   static getHeadersAndStartRow(sheet: ExcelJS.Worksheet, keywords: string[]): { headers: string[], dataStartRow: number } {
@@ -176,7 +179,8 @@ export class LegacyImportController {
         }
 
         if (!nome) {
-          fs.appendFileSync('imports.log', `[CLIENTE ERR] Row ${i} nome vazio. obj=${JSON.stringify(rowObj)}\n`);
+          // LGPD: sem JSON.stringify(rowObj) — linha contém CPF, telefone e endereço
+          fs.appendFileSync('imports.log', `[CLIENTE ERR] Row ${i} nome vazio\n`);
           stats.errors++;
           continue;
         }
@@ -284,8 +288,7 @@ export class LegacyImportController {
 
     const { headers, dataStartRow } = this.getHeadersAndStartRow(sheet, allKeywords);
     fs.appendFileSync('imports.log', `[DEBUG PRODUTOS] Headers detected on row ${dataStartRow - 1}: ${JSON.stringify(headers)}\n`);
-    const firstRow = sheet.getRow(dataStartRow);
-    fs.appendFileSync('imports.log', `[DEBUG PRODUTOS] First data row ${dataStartRow}: ${JSON.stringify(firstRow.values)}\n`);
+    // LGPD: a primeira linha não é mais logada — podia conter dados de clientes
 
     for (let i = dataStartRow; i <= sheet.rowCount; i++) {
       try {

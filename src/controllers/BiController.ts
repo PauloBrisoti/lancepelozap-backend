@@ -1,10 +1,11 @@
 import { Request, Response } from 'express';
+import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
+import { asyncHandler } from "../lib/asyncHandler";
 import { buildDateRange } from '../lib/dateUtils';
 
 export class BiController {
-  async comparativo(req: Request, res: Response) {
-    try {
+  comparativo = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
@@ -41,14 +42,10 @@ export class BiController {
       ]);
 
       res.json({ periodo1, periodo2 });
-    } catch (error: any) {
-      console.error('Erro no BI comparativo:', error);
-      res.status(500).json({ message: error.message || 'Erro ao gerar comparativo' });
-    }
-  }
+    
+  }, "comparativo");
 
-  async abcCurve(req: Request, res: Response) {
-    try {
+  abcCurve = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
@@ -103,14 +100,10 @@ export class BiController {
       });
 
       res.json({ produtos: classified, resumo, totalReceita: Math.round(totalReceita * 100) / 100 });
-    } catch (error: any) {
-      console.error('Erro no BI ABC curve:', error);
-      res.status(500).json({ message: error.message || 'Erro ao gerar curva ABC' });
-    }
-  }
+    
+  }, "abc curve");
 
-  async profitability(req: Request, res: Response) {
-    try {
+  profitability = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
@@ -158,14 +151,10 @@ export class BiController {
       const total = result.reduce((s, r) => ({ receita: s.receita + r.receita, custo: s.custo + r.custo, lucro: s.lucro + r.lucro }), { receita: 0, custo: 0, lucro: 0 });
 
       res.json({ categorias: result, total: { ...total, margem: total.receita > 0 ? Math.round((total.lucro / total.receita) * 10000) / 100 : 0 } });
-    } catch (error: any) {
-      console.error('Erro no BI rentabilidade:', error);
-      res.status(500).json({ message: error.message || 'Erro ao gerar rentabilidade' });
-    }
-  }
+    
+  }, "profitability");
 
-  async salesHeatmap(req: Request, res: Response) {
-    try {
+  salesHeatmap = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
@@ -204,14 +193,10 @@ export class BiController {
         porHora: porHora.map((vendas, hora) => ({ hora: `${hora}h`, vendas })),
         porDiaMes: porDiaMes.slice(0, totalDias).map((vendas, dia) => ({ dia: dia + 1, vendas })),
       });
-    } catch (error: any) {
-      console.error('Erro no BI heatmap:', error);
-      res.status(500).json({ message: error.message || 'Erro ao gerar heatmap' });
-    }
-  }
+    
+  }, "registrar venda s heatmap");
 
-  async topFlop(req: Request, res: Response) {
-    try {
+  topFlop = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId as string;
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
@@ -251,9 +236,6 @@ export class BiController {
       const flop = entries.sort((a, b) => a.receita - b.receita).slice(0, maxResults);
 
       res.json({ top, flop });
-    } catch (error: any) {
-      console.error('Erro no BI top/flop:', error);
-      res.status(500).json({ message: error.message || 'Erro ao gerar top/flop' });
-    }
-  }
+    
+  }, "top flop");
 }

@@ -1,9 +1,10 @@
 import { Request, Response } from 'express';
+import { logger } from '../lib/logger';
+import { asyncHandler } from "../lib/asyncHandler";
 import { prisma } from '../lib/prisma';
 
 export class SupplierController {
-  async list(req: Request, res: Response) {
-    try {
+  list = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId;
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
@@ -25,14 +26,10 @@ export class SupplierController {
       });
 
       res.json(suppliers);
-    } catch (error: any) {
-      console.error('Erro ao listar fornecedores:', error);
-      res.status(500).json({ message: error.message || 'Erro interno' });
-    }
-  }
+    
+  }, "listar");
 
-  async getById(req: Request, res: Response) {
-    try {
+  getById = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId;
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
@@ -41,14 +38,10 @@ export class SupplierController {
       if (!supplier) return res.status(404).json({ message: 'Fornecedor não encontrado' });
 
       res.json(supplier);
-    } catch (error: any) {
-      console.error('Erro ao buscar fornecedor:', error);
-      res.status(500).json({ message: error.message || 'Erro interno' });
-    }
-  }
+    
+  }, "obter by id");
 
-  async create(req: Request, res: Response) {
-    try {
+  create = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId;
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
@@ -65,14 +58,10 @@ export class SupplierController {
       });
 
       res.status(201).json(supplier);
-    } catch (error: any) {
-      console.error('Erro ao criar fornecedor:', error);
-      res.status(500).json({ message: error.message || 'Erro interno' });
-    }
-  }
+    
+  }, "criar");
 
-  async update(req: Request, res: Response) {
-    try {
+  update = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId;
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
@@ -99,14 +88,10 @@ export class SupplierController {
       });
 
       res.json(updated);
-    } catch (error: any) {
-      console.error('Erro ao atualizar fornecedor:', error);
-      res.status(500).json({ message: error.message || 'Erro interno' });
-    }
-  }
+    
+  }, "atualizar");
 
-  async remove(req: Request, res: Response) {
-    try {
+  remove = asyncHandler(async (req: Request, res: Response) => {
       const storeId = req.user?.storeId;
       if (!storeId) return res.status(401).json({ message: 'Loja não identificada' });
 
@@ -123,9 +108,6 @@ export class SupplierController {
 
       await prisma.supplier.delete({ where: { id } });
       res.json({ message: 'Fornecedor removido com sucesso' });
-    } catch (error: any) {
-      console.error('Erro ao remover fornecedor:', error);
-      res.status(500).json({ message: error.message || 'Erro interno' });
-    }
-  }
+    
+  }, "remover");
 }

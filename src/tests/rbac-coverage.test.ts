@@ -5,9 +5,9 @@ import { RBAC_MODULES } from '../lib/rbacModules';
 
 const routesSource = readFileSync(join(__dirname, '..', 'routes', 'super-admin.routes.ts'), 'utf-8');
 
-const usedModules = [...routesSource.matchAll(/requireInternalPermission\('([A-Z_]+)'/g)]
+const usedModules: string[] = [...routesSource.matchAll(/requireInternalPermission\('([A-Z_]+)'/g)]
   .map(m => m[1]);
-const canonical = [...RBAC_MODULES];
+const canonical: string[] = [...RBAC_MODULES];
 
 describe('Cobertura RBAC de módulos', () => {
   it('nenhum módulo da matriz é fantasma (protege ao menos 1 rota)', () => {

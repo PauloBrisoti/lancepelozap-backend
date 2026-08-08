@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 import { fail } from '../lib/response';
 
@@ -8,6 +9,7 @@ type StoreAction =
   | 'vender_crediario' // Vender no fiado
   | 'cancelar_venda'   // Cancelar venda
   | 'ver_relatorios'   // Ver relatórios e dashboard
+  | 'ver_financeiro'   // Ver painéis financeiros (DRE, transações, relatórios)
   | 'gerenciar_produtos' // CRUD produtos
   | 'gerenciar_clientes' // CRUD clientes
   | 'gerenciar_estoque'  // Entrada de produtos
@@ -35,6 +37,7 @@ const MIN_ROLE_FOR_ACTION: Record<StoreAction, string> = {
   vender_crediario: 'VENDEDOR',
   cancelar_venda: 'VENDEDOR',
   ver_relatorios: 'CAIXA',
+  ver_financeiro: 'GERENTE',
   gerenciar_produtos: 'GERENTE',
   gerenciar_clientes: 'VENDEDOR',
   gerenciar_estoque: 'VENDEDOR',
@@ -107,7 +110,7 @@ export function requireStorePermission(action: StoreAction, options?: { maxDisco
 
       next();
     } catch (error) {
-      console.error('Erro no middleware de permissão:', error);
+      logger.error('Erro no middleware de permissão:', error);
       return fail(res, 'Erro interno ao verificar permissões', 500);
     }
   };

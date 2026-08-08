@@ -1,4 +1,5 @@
-export class WhatsAppService {
+
+import { logger } from '../lib/logger';export class WhatsAppService {
   private baseUrl: string;
   private token: string;
   private instance: string;
@@ -33,13 +34,13 @@ export class WhatsAppService {
 
       if (!response.ok) {
         const err = await response.text();
-        console.error('Evolution API error:', err);
+        logger.error('Evolution API error:', err);
         return false;
       }
 
       return true;
     } catch (error) {
-      console.error('WhatsApp send error:', error);
+      logger.error('WhatsApp send error:', error);
       return false;
     }
   }
@@ -69,7 +70,7 @@ export class WhatsAppService {
 
       return response.ok;
     } catch (error) {
-      console.error('WhatsApp media error:', error);
+      logger.error('WhatsApp media error:', error);
       return false;
     }
   }

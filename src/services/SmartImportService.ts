@@ -1,4 +1,5 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { logger } from '../lib/logger';
 import fs from 'fs';
 import { prisma } from '../lib/prisma';
 import ExcelJS from 'exceljs';
@@ -134,7 +135,7 @@ ATENÇÃO: É EXTREMAMENTE CRÍTICO QUE VOCÊ EXTRAIA TODAS AS LINHAS E TODOS OS
           success.clientes++;
           customerMap.set(nomeLimpo.toLowerCase(), customer.id);
         } catch (err) {
-          console.error(`Erro ao importar cliente ${c?.nome}:`, err);
+          logger.error(`Erro ao importar cliente ${c?.nome}:`, err);
         }
       }
     }
@@ -170,7 +171,7 @@ ATENÇÃO: É EXTREMAMENTE CRÍTICO QUE VOCÊ EXTRAIA TODAS AS LINHAS E TODOS OS
           success.produtos++;
           productMap.set(nomeLimpo.toLowerCase(), product.id);
         } catch (err) {
-          console.error(`Erro ao importar produto ${p?.nome}:`, err);
+          logger.error(`Erro ao importar produto ${p?.nome}:`, err);
         }
       }
     }
@@ -244,7 +245,7 @@ ATENÇÃO: É EXTREMAMENTE CRÍTICO QUE VOCÊ EXTRAIA TODAS AS LINHAS E TODOS OS
                   });
                 }
               } catch (errItem) {
-                console.error(`Erro ao importar item ${item?.nome} da venda:`, errItem);
+                logger.error(`Erro ao importar item ${item?.nome} da venda:`, errItem);
               }
             }
           }
@@ -275,7 +276,7 @@ ATENÇÃO: É EXTREMAMENTE CRÍTICO QUE VOCÊ EXTRAIA TODAS AS LINHAS E TODOS OS
           }
           success.vendas++;
         } catch (errVenda) {
-          console.error(`Erro ao importar venda do cliente ${v?.cliente}:`, errVenda);
+          logger.error(`Erro ao importar venda do cliente ${v?.cliente}:`, errVenda);
         }
       }
     }
@@ -308,7 +309,7 @@ ATENÇÃO: É EXTREMAMENTE CRÍTICO QUE VOCÊ EXTRAIA TODAS AS LINHAS E TODOS OS
           });
           success.transacoes++;
         } catch (errTx) {
-          console.error(`Erro ao importar transação ${t?.descricao}:`, errTx);
+          logger.error(`Erro ao importar transação ${t?.descricao}:`, errTx);
         }
       }
     }

@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { logger } from '../../lib/logger';
 import { prisma } from '../../lib/prisma';
 import { ensureWallets, getEffectiveUserId } from './helpers';
 
@@ -17,7 +18,7 @@ export class PersonalWalletController {
 
       return res.json(wallets);
     } catch (error) {
-      console.error('Erro ao listar carteiras PF:', error);
+      logger.error('Erro ao listar carteiras PF:', error);
       return res.status(500).json({ error: 'Erro interno' });
     }
   }
@@ -36,7 +37,7 @@ export class PersonalWalletController {
 
       return res.status(201).json(wallet);
     } catch (error) {
-      console.error('Erro ao criar carteira PF:', error);
+      logger.error('Erro ao criar carteira PF:', error);
       return res.status(500).json({ error: 'Erro interno' });
     }
   }
@@ -53,7 +54,7 @@ export class PersonalWalletController {
       await prisma.personalWallet.delete({ where: { id } });
       return res.status(204).send();
     } catch (error) {
-      console.error('Erro ao deletar carteira PF:', error);
+      logger.error('Erro ao deletar carteira PF:', error);
       return res.status(500).json({ error: 'Erro interno' });
     }
   }
