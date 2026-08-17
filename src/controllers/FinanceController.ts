@@ -1,11 +1,11 @@
 import { Request, Response } from 'express';
-import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 import { auditLog } from '../lib/audit';
 import { buildDateRange, getTimezone, parseDate } from '../lib/dateUtils';
 import { toZonedTime } from 'date-fns-tz';
 import { asyncHandler } from "../lib/asyncHandler";
 import { StockMovementService } from '../services/StockMovementService';
+import { CATEGORIA_VENDAS, normalizarCategoria } from '../lib/categorias';
 
 async function deleteSaleTree(tx: any, sale: { id: string; saleItems: { id: string; productId: string; quantidade: any }[] }, storeId: string, userId: string) {
   for (const item of sale.saleItems) {
@@ -116,7 +116,7 @@ export class FinanceController {
 
       // Recebimentos (inclui clientes devedores)
       const receivables = await prisma.accountReceivable.findMany({
-        where: { storeId, status: { not: 'CANCELADA' } },
+        where: { storeId, status: { in: ['PENDENTE', 'PAGO_PARCIAL'] } },
         include: {
           customer: {
             select: { nomeCompleto: true, telefoneWhatsapp: true }
@@ -279,8 +279,6 @@ export class FinanceController {
 
       const transaction = await prisma.$transaction(async (tx) => {
         
-        let firstTxId = null;
-
         if (isParcelado === 'true') {
           const parcelas = Number(numeroParcelas);
           const freq = frequencia as string;
@@ -305,14 +303,14 @@ export class FinanceController {
 
             if (isCurrentPaid) {
               // Create FinancialTransaction for the paid installment
-              const newTx = await tx.financialTransaction.create({
+              await tx.financialTransaction.create({
                 data: {
                   storeId,
                   walletId,
                   tipo,
                   valor: valorNum,
                   descricao: `${descricao} (${i + 1}/${parcelas})`,
-                  categoria,
+                  categoria: normalizarCategoria(categoria),
                   dataTransacao: dtVencimento,
                   comprovanteUrl,
                   customerId: customerId || null,
@@ -320,8 +318,6 @@ export class FinanceController {
                   supplierId: supplierId || null
                 }
               });
-              if (i === 0) firstTxId = newTx.id;
-
               // Update balance
               await tx.wallet.update({
                 where: { id: walletId },
@@ -352,7 +348,7 @@ export class FinanceController {
                   data: {
                     storeId,
                     descricao: `${descricao} (${i + 1}/${parcelas})`,
-                    categoria,
+                    categoria: normalizarCategoria(categoria),
                     fornecedor: fornecedor || customerId || null,
                     supplierId: supplierId || null,
                     dataVencimento: dtVencimento,
@@ -373,7 +369,7 @@ export class FinanceController {
               tipo,
               valor: valorNum,
               descricao,
-              categoria,
+              categoria: normalizarCategoria(categoria),
               dataTransacao: dtTransacao,
               comprovanteUrl,
               customerId: customerId || null,
@@ -439,7 +435,7 @@ export class FinanceController {
             tipo, 
             valor: valorNum, 
             descricao, 
-            categoria,
+            categoria: categoria !== undefined ? normalizarCategoria(categoria) : undefined,
             ...(dtTransacao && { dataTransacao: dtTransacao })
           }
         });
@@ -594,10 +590,10 @@ export class FinanceController {
       const quitou = novoTotalPago >= valorParcelaOriginal;
 
       await prisma.$transaction(async (tx) => {
-        // 1. Marcar como PAGO_PARCIAL no BD (nunca PAGO — status é sempre dinâmico)
+        // 1. Máquina de estados: PAGO quando quitado, PAGO_PARCIAL caso contrário
         await tx.accountReceivable.update({
           where: { id },
-          data: { status: 'PAGO_PARCIAL' }
+          data: { status: quitou ? 'PAGO' : 'PAGO_PARCIAL' }
         });
 
         // 2. Lançar a entrada vinculada à parcela (receivableId)
@@ -614,7 +610,7 @@ export class FinanceController {
             tipo: 'ENTRADA',
             valor: valorPagarAgora,
             descricao,
-            categoria: 'Vendas'
+            categoria: CATEGORIA_VENDAS
           }
         });
 
@@ -678,7 +674,7 @@ export class FinanceController {
       }
 
       const numParcelas = Number(novasParcelas) || 1;
-      const valorParcela = Number(novoValor) / numParcelas;
+      const valorParcela = Math.round((Number(novoValor) / numParcelas) * 100) / 100;
 
       const result = await prisma.$transaction(async (tx) => {
         // Cancel current receivable
@@ -981,7 +977,7 @@ export class FinanceController {
                   storeId, walletId, receivableId: r.id, saleId: r.saleId,
                   tipo: 'ENTRADA', valor: saldoRestante,
                   descricao: `Recebimento de Fiado: Parcela ${r.numeroParcela}/${r.totalParcelas}`,
-                  categoria: 'Vendas'
+                  categoria: CATEGORIA_VENDAS
                 }
               });
               await tx.wallet.update({ where: { id: walletId }, data: { saldoAtual: { increment: saldoRestante } } });
@@ -990,7 +986,7 @@ export class FinanceController {
             if (idsQuitados.length > 0) {
               await tx.accountReceivable.updateMany({
                 where: { id: { in: idsQuitados }, storeId, status: { not: 'CANCELADA' } },
-                data: { status: 'PAGO_PARCIAL' }
+                data: { status: 'PAGO' }
               });
             }
           } else if (entityType === 'PAYABLE') {

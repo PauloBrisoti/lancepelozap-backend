@@ -1,9 +1,11 @@
+import { getErrorMessage } from '../lib/errors';
 import { Request, Response } from 'express';
 import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 import ExcelJS from 'exceljs';
 import { asyncHandler } from "../lib/asyncHandler";
 import fs from 'fs';
+import { normalizarCategoria } from '../lib/categorias';
 
 export class LegacyImportController {
   static importLegacy = asyncHandler(async (req: Request, res: Response) => {
@@ -76,8 +78,8 @@ export class LegacyImportController {
         results: stats
       });
 
-    } catch (error: any) {
-      logger.error(error);
+    } catch (err: unknown) {
+      logger.error('Erro na importação do legado:', err);
       if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
       return res.status(500).json({ error: '' });
     }
@@ -211,8 +213,8 @@ export class LegacyImportController {
         if (codigo) customerMap.set(codigo.toString().trim(), customer.id);
         customerMap.set(nome.toString().trim().toLowerCase(), customer.id);
         stats.processed++;
-      } catch (err: any) {
-        fs.appendFileSync('imports.log', `[CLIENTE ERR] Row ${i}: ${err.message}\n`);
+      } catch (err: unknown) {
+        fs.appendFileSync('imports.log', `[CLIENTE ERR] Row ${i}: ${getErrorMessage(err)}\n`);
         stats.errors++;
       }
     }
@@ -300,7 +302,6 @@ export class LegacyImportController {
         const codigo = this.getVal(rowObj, ['código', 'codigo']);
         const produto = this.getVal(rowObj, ['produto', 'nome', 'descrição', 'descricao']);
         const marca = this.getVal(rowObj, ['marca', 'categoria']);
-        const volume = this.getVal(rowObj, ['volume', 'tamanho']) || '';
         const qtdEstoque = parseFloat(this.getVal(rowObj, ['qtd em estoque', 'estoque', 'qtd']) || '0');
         
         let custoStr = this.getVal(rowObj, ['custo de compra (r$)', 'custo de compra', 'custo', 'valor de custo']);
@@ -375,8 +376,8 @@ export class LegacyImportController {
         if (codigo) productMap.set(codigo.toString().trim(), p.id);
         productMap.set(produto.toString().trim().toLowerCase(), p.id);
         stats.processed++;
-      } catch (err: any) {
-        fs.appendFileSync('imports.log', `[PRODUTO ERR] Row ${i}: ${err.message}\n`);
+      } catch (err: unknown) {
+        fs.appendFileSync('imports.log', `[PRODUTO ERR] Row ${i}: ${getErrorMessage(err)}\n`);
         stats.errors++;
       }
     }
@@ -593,8 +594,8 @@ export class LegacyImportController {
         }
 
         stats.processed++;
-      } catch (err: any) {
-        fs.appendFileSync('imports.log', `[VENDA ERR] Pedido ${numero}: ${err.message}\n`);
+      } catch (err: unknown) {
+        fs.appendFileSync('imports.log', `[VENDA ERR] Pedido ${numero}: ${getErrorMessage(err)}\n`);
         stats.errors++;
       }
     }
@@ -690,7 +691,7 @@ export class LegacyImportController {
               tipo: 'ENTRADA',
               valor: entrada,
               descricao: descricao.toString(),
-              categoria: categoria ? categoria.toString() : null,
+              categoria: normalizarCategoria(categoria),
               dataTransacao: isNaN(data.getTime()) ? new Date() : data
             }
           });
@@ -705,14 +706,14 @@ export class LegacyImportController {
               tipo: 'SAIDA',
               valor: saida,
               descricao: descricao.toString(),
-              categoria: categoria ? categoria.toString() : null,
+              categoria: normalizarCategoria(categoria),
               dataTransacao: isNaN(data.getTime()) ? new Date() : data
             }
           });
           stats.processed++;
         }
-      } catch (err: any) {
-        fs.appendFileSync('imports.log', `[FINANCEIRO ERR] Row ${i}: ${err.message}\n`);
+      } catch (err: unknown) {
+        fs.appendFileSync('imports.log', `[FINANCEIRO ERR] Row ${i}: ${getErrorMessage(err)}\n`);
         stats.errors++;
       }
     }

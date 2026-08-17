@@ -5,6 +5,7 @@ import { prisma } from '../lib/prisma';
 import ExcelJS from 'exceljs';
 import path from 'path';
 import { parseDate } from '../lib/dateUtils';
+import { CATEGORIA_VENDAS, normalizarCategoria } from '../lib/categorias';
 
 export class SmartImportService {
   static async processFile(storeId: string, filePath: string, originalName: string) {
@@ -26,7 +27,7 @@ export class SmartImportService {
       let csvContent = '';
       workbook.worksheets.forEach(sheet => {
         csvContent += `\n--- Aba: ${sheet.name} ---\n`;
-        sheet.eachRow((row, rowNumber) => {
+        sheet.eachRow((row, _rowNumber) => {
           csvContent += JSON.stringify(row.values) + '\n';
         });
       });
@@ -255,7 +256,7 @@ ATENÇÃO: É EXTREMAMENTE CRÍTICO QUE VOCÊ EXTRAIA TODAS AS LINHAS E TODOS OS
           if (sinalRecebido > 0) {
             await prisma.financialTransaction.create({
               data: {
-                storeId, walletId: wallet.id, saleId: sale.id, tipo: 'ENTRADA', valor: sinalRecebido, dataTransacao: date, descricao: `Recebimento de Sinal/Venda via IA - ${nomeClienteLimpo}`, categoria: 'Venda'
+                storeId, walletId: wallet.id, saleId: sale.id, tipo: 'ENTRADA', valor: sinalRecebido, dataTransacao: date, descricao: `Recebimento de Sinal/Venda via IA - ${nomeClienteLimpo}`, categoria: CATEGORIA_VENDAS
               }
             });
             await prisma.wallet.update({
@@ -297,7 +298,7 @@ ATENÇÃO: É EXTREMAMENTE CRÍTICO QUE VOCÊ EXTRAIA TODAS AS LINHAS E TODOS OS
               valor,
               dataTransacao: date,
               descricao: t?.descricao ? String(t.descricao) : 'Transação via IA',
-              categoria: t?.categoria_dre ? String(t.categoria_dre) : 'Outros'
+              categoria: normalizarCategoria(t?.categoria_dre != null ? String(t.categoria_dre) : undefined)
             }
           });
 

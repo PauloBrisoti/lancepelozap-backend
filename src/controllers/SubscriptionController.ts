@@ -145,7 +145,6 @@ export class SubscriptionController {
   static requestPlanChange = asyncHandler(async (req: Request, res: Response) => {
     const storeId = (req.user as any)?.storeId as string;
     const clientId = (req.user as any)?.clientId as string;
-    const userId = (req.user as any)?.id as string;
     const { planId, motivo } = req.body;
 
     if (!storeId || !clientId) {

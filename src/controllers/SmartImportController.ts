@@ -1,3 +1,4 @@
+import { getErrorMessage } from '../lib/errors';
 import { Request, Response } from 'express';
 import { logger } from '../lib/logger';
 import { SmartImportService } from '../services/SmartImportService';
@@ -23,12 +24,12 @@ export class SmartImportController {
       }
 
       return res.status(200).json(result);
-    } catch (error: any) {
+    } catch (error: unknown) {
       if (req.file && fs.existsSync(req.file.path)) {
         try { fs.unlinkSync(req.file.path); } catch (e) {}
       }
       logger.error('Erro na importação inteligente:', error);
-      return res.status(500).json({ error: error.message || 'Erro interno ao processar arquivo.' });
+      return res.status(500).json({ error: getErrorMessage(error) || 'Erro interno ao processar arquivo.' });
     }
   }
   static hardReset = asyncHandler(async (req: Request, res: Response) => {

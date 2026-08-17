@@ -3,7 +3,7 @@ import { asyncHandler } from "../lib/asyncHandler";
 import { prisma } from '../lib/prisma';
 
 export class PlanController {
-  list = asyncHandler(async (req: Request, res: Response) => {
+  list = asyncHandler(async (_req: Request, res: Response) => {
       const plans = await prisma.plan.findMany({ orderBy: { precoMensal: 'asc' } });
       return res.json(plans);
     

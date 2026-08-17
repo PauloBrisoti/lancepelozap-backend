@@ -2,9 +2,9 @@ import { z } from 'zod';
 import { Request, Response, NextFunction } from 'express';
 import { fail } from './response';
 
-export const EMAIL_REGEX = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$/;
+const EMAIL_REGEX = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$/;
 
-export const DISPOSABLE_DOMAINS = new Set([
+const DISPOSABLE_DOMAINS = new Set([
   'mailinator.com', 'guerrillamail.com', '10minutemail.com', 'temp-mail.org',
   'throwaway.email', 'yopmail.com', 'mailnator.com', 'trashmail.com',
   'temporarymail.com', 'fakemail.com', 'emailfake.com', 'tempmail.net',
@@ -34,8 +34,8 @@ export function emailValido(msg?: string) {
     }, 'E-mail genérico não é permitido');
 }
 
-export const TELEFONE_REGEX = /^\(\d{2}\)\s9\d{4}-\d{4}$/;
-export const telefoneValido = (msg?: string) => z.string().regex(TELEFONE_REGEX, msg || 'Telefone deve estar no formato (XX) 9XXXX-XXXX');
+const TELEFONE_REGEX = /^\(\d{2}\)\s9\d{4}-\d{4}$/;
+const telefoneValido = (msg?: string) => z.string().regex(TELEFONE_REGEX, msg || 'Telefone deve estar no formato (XX) 9XXXX-XXXX');
 
 export function validate(schema: z.ZodSchema) {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -112,7 +112,7 @@ export const transactionSchema = z.object({
   tipo: z.enum(['ENTRADA', 'SAIDA']),
   valor: z.number().positive('Valor deve ser positivo'),
   descricao: z.string().min(1, 'Descrição é obrigatória'),
-  categoria: z.string().optional(),
+  categoria: z.string().trim().min(1, 'Categoria é obrigatória'),
   dataTransacao: z.string().optional(),
   customerId: z.string().optional(),
   fornecedor: z.string().optional(),
@@ -124,7 +124,7 @@ export const loginSchema = z.object({
   captchaToken: z.string().optional(),
 });
 
-export const passwordSchema = z
+const passwordSchema = z
   .string()
   .min(8, 'Senha deve ter no mínimo 8 caracteres')
   .max(128, 'Senha deve ter no máximo 128 caracteres')
@@ -184,9 +184,38 @@ export const completeProfileSchema = z.object({
   uf: z.string().optional(),
 });
 
-export const createUserSchemaOld = z.object({
-  nome: z.string().min(1),
-  email: emailValido(),
-  password: z.string().min(8, 'Senha deve ter no mínimo 8 caracteres'),
-  role: z.enum(['VENDEDOR', 'CAIXA', 'GERENTE']).optional().default('VENDEDOR'),
+// ============================================================
+// VALIDAÇÕES FINANCEIRAS E CREDIÁRIO (SEGURANÇA)
+// ============================================================
+
+export const payReceivableSchema = z.object({
+  valorPago: z
+    .number()
+    .positive('O valor pago deve ser obrigatoriamente maior que zero.')
+    .optional(), // É opcional porque o Controller pode assumir o valor total se não for enviado
+  formaPagamento: z.string().optional(),
+  walletId: z.string().optional(),
+});
+
+export const renegotiateSchema = z.object({
+  numeroParcelas: z
+    .number()
+    .int('O número de parcelas deve ser um número inteiro.')
+    .min(1, 'A renegociação deve ter pelo menos 1 parcela.'),
+  novoValor: z
+    .number()
+    .positive('O valor renegociado deve ser maior que zero.')
+    .optional(),
+  primeiroVencimento: z
+    .string()
+    // Valida formato ISO YYYY-MM-DD
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'A data de vencimento deve estar no formato YYYY-MM-DD')
+    .optional(),
+});
+
+export const bulkActionSchema = z.object({
+  action: z.enum(['MARK_PAID', 'CANCEL']),
+  receivableIds: z
+    .array(z.string().min(1, 'ID da parcela é inválido.'))
+    .min(1, 'Selecione pelo menos uma parcela para a ação em massa.'),
 });

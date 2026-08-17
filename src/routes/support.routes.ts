@@ -15,7 +15,7 @@ const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
 
 // Configuração multer para anexos temporários locais
 const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
+  destination: function (_req, _file, cb) {
     cb(null, 'uploads/');
   },
   filename: function (req, file, cb) {

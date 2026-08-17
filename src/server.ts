@@ -1,3 +1,4 @@
+import { getErrorMessage } from './lib/errors';
 import "dotenv/config";
 import app from "./app";
 import { prisma } from './lib/prisma';
@@ -35,8 +36,8 @@ if (!JWT_SECRET || JWT_SECRET.length < 16) {
   try {
     await prisma.$queryRaw`SELECT 1`;
     logger.info('DB connection OK');
-  } catch (err: any) {
-    logger.warn('DB startup check failed (non-fatal)', err);
+  } catch (err: unknown) {
+    logger.warn('DB startup check failed (non-fatal)', { err: getErrorMessage(err) });
   }
 })();
 

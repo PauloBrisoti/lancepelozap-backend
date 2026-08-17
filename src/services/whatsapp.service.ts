@@ -1,3 +1,4 @@
+import { getErrorMessage } from '../lib/errors';
 interface SendParams {
   apiUrl: string;
   apiKey: string;
@@ -72,7 +73,7 @@ export async function sendWhatsApp({ apiUrl, apiKey, phone, message }: SendParam
 
     const data = await response.json();
     return { success: true, messageId: data?.id || data?.messageId || 'ok' };
-  } catch (error: any) {
-    return { success: false, error: error.message || 'Erro de conexão com API WhatsApp' };
+  } catch (error: unknown) {
+    return { success: false, error: getErrorMessage(error) || 'Erro de conexão com API WhatsApp' };
   }
 }

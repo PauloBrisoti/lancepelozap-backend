@@ -1,3 +1,4 @@
+import { getErrorMessage } from '../lib/errors';
 import { prisma } from "../lib/prisma";
 import { logger } from '../lib/logger';
 import { differenceInDays, startOfDay } from "date-fns";
@@ -109,13 +110,13 @@ export async function processarCobrancasRecorrentes() {
 
         log(`Cobranca criada: ${descricao} - R$ ${precoBase.toFixed(2)}`);
         criadas++;
-      } catch (err: any) {
-        log(`Erro ao processar ordem ${ordem.id}: ${err.message}`);
+      } catch (err: unknown) {
+        log(`Erro ao processar ordem ${ordem.id}: ${getErrorMessage(err)}`);
       }
     }
 
     log(`Cobrancas criadas neste ciclo: ${criadas}`);
-  } catch (err: any) {
-    log(`Erro geral no cron: ${err.message}`);
+  } catch (err: unknown) {
+    log(`Erro geral no cron: ${getErrorMessage(err)}`);
   }
 }

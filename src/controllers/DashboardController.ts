@@ -22,10 +22,25 @@ export class DashboardController {
 
     // 1. Receitas no Período Atual (Regime de Caixa e Competência)
     const vendasPeriodo = await prisma.sale.findMany({
-      where: { storeId, status: { not: 'CANCELADA' }, dataVenda: { gte: startDate, lte: endDate } },
+      where: { storeId, status: 'FINALIZADA', dataVenda: { gte: startDate, lte: endDate } },
       include: { saleItems: { include: { product: { include: { category: true } } } } }
     });
     const qtdPedidosPeriodo = vendasPeriodo.length;
+
+    // Vendas do Dia (competência, fuso da loja) — apenas vendas FINALIZADA
+    const tz = getTimezone();
+    const agoraTz = toZonedTime(new Date(), tz);
+    const hojeInicio = fromZonedTime(`${format(agoraTz, 'yyyy-MM-dd')}T00:00:00`, tz);
+    const hojeFim = fromZonedTime(`${format(agoraTz, 'yyyy-MM-dd')}T23:59:59.999`, tz);
+    const vendasHojeAgg = await prisma.sale.aggregate({
+      where: { storeId, status: 'FINALIZADA', dataVenda: { gte: hojeInicio, lte: hojeFim } },
+      _sum: { valorTotalBruto: true, valorDesconto: true, valorTaxasGateway: true },
+      _count: true
+    });
+    const vendasHoje = Number(vendasHojeAgg._sum.valorTotalBruto || 0)
+      - Number(vendasHojeAgg._sum.valorDesconto || 0)
+      - Number(vendasHojeAgg._sum.valorTaxasGateway || 0);
+    const pedidosHoje = vendasHojeAgg._count;
 
     // Soma de Vendas (Competência) — Faturamento Bruto = SUM(valorTotalBruto)
     const faturamentoBruto = vendasPeriodo.reduce((acc, sale) => acc + Number(sale.valorTotalBruto), 0);
@@ -43,7 +58,7 @@ export class DashboardController {
 
     // Total a Receber (Fiado) — dinâmico: valorParcela - SUM(pagamentos)
     const receivablesForKpi = await prisma.accountReceivable.findMany({
-      where: { storeId, status: { not: 'CANCELADA' } },
+      where: { storeId, status: { in: ['PENDENTE', 'PAGO_PARCIAL'] } },
       select: {
         valorParcela: true,
         payments: {
@@ -61,18 +76,20 @@ export class DashboardController {
 
     // 2. Receitas no Período Anterior (Para Comparativo — competência, mesma base do DRE)
     const prevSalesAgg = await prisma.sale.aggregate({
-      where: { storeId, status: { not: 'CANCELADA' }, dataVenda: { gte: prevStartDate, lte: prevEndDate } },
+      where: { storeId, status: 'FINALIZADA', dataVenda: { gte: prevStartDate, lte: prevEndDate } },
       _sum: { valorTotalBruto: true, valorDesconto: true, valorTaxasGateway: true }
     });
     const prevFaturamentoLiquido = Number(prevSalesAgg._sum.valorTotalBruto || 0) - Number(prevSalesAgg._sum.valorDesconto || 0) - Number(prevSalesAgg._sum.valorTaxasGateway || 0);
     const faturamentoCrescimento = prevFaturamentoLiquido === 0 ? 0 : ((faturamentoLiquido - prevFaturamentoLiquido) / prevFaturamentoLiquido) * 100;
 
-    // 3. Faturamento Total Histórico (Regime de Caixa)
-    const todasReceitas = await prisma.financialTransaction.aggregate({
-      where: { storeId, tipo: 'ENTRADA', status: 'ATIVA' },
-      _sum: { valor: true }
+    // 3. Faturamento Total Histórico (Competência — apenas vendas FINALIZADA)
+    const todasVendasAgg = await prisma.sale.aggregate({
+      where: { storeId, status: 'FINALIZADA' },
+      _sum: { valorTotalBruto: true, valorDesconto: true, valorTaxasGateway: true }
     });
-    const faturamentoTotal = Number(todasReceitas._sum.valor || 0);
+    const faturamentoTotal = Number(todasVendasAgg._sum.valorTotalBruto || 0)
+      - Number(todasVendasAgg._sum.valorDesconto || 0)
+      - Number(todasVendasAgg._sum.valorTaxasGateway || 0);
 
     // 4. Impostos Estimados (hierarquia: produto → categoria → loja)
     const storeSettings = await prisma.store.findUnique({
@@ -116,7 +133,7 @@ export class DashboardController {
 
     // 5. Últimas 5 vendas (dentro do período selecionado)
     const ultimasVendas = await prisma.sale.findMany({
-      where: { storeId, status: { not: 'CANCELADA' }, dataVenda: { gte: startDate, lte: endDate } },
+      where: { storeId, status: 'FINALIZADA', dataVenda: { gte: startDate, lte: endDate } },
       orderBy: { dataVenda: 'desc' },
       take: 5,
       include: { customer: true }
@@ -141,7 +158,6 @@ export class DashboardController {
       .slice(0, 5);
 
     // 7. Dados para Gráfico (Receitas x Despesas) — respeita o período do filtro
-    const tz = getTimezone();
     const diffDays = Math.round((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
     const chartData = [];
 
@@ -203,7 +219,7 @@ export class DashboardController {
     }
 
     return res.status(200).json({
-      vendasHoje: dinheiroCaixaRealizado,
+      vendasHoje,
       faturamentoPeriodo: faturamentoLiquido,
       faturamentoBruto,
       faturamentoLiquido,
@@ -215,7 +231,7 @@ export class DashboardController {
       aReceberFiado,
       faturamentoCrescimento,
       faturamentoTotal,
-      pedidosHoje: qtdPedidosPeriodo,
+      pedidosHoje,
       pedidosPeriodo: qtdPedidosPeriodo,
       ticketMedio: ticketMedioPeriodo,
       cmvPeriodo: Math.round(cmvPeriodo * 100) / 100,

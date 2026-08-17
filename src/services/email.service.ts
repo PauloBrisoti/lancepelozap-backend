@@ -1,3 +1,4 @@
+import { getErrorMessage } from '../lib/errors';
 import nodemailer from 'nodemailer';
 import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
@@ -56,9 +57,9 @@ export async function sendEmail(
       html,
     });
     return true;
-  } catch (error: any) {
-    logger.error('[EMAIL] Falha ao enviar para', { err: to, message: error.message });
-    throw new Error(`Falha ao enviar email: ${error.message}`);
+  } catch (error: unknown) {
+    logger.error('[EMAIL] Falha ao enviar para', { err: to, message: getErrorMessage(error) });
+    throw new Error(`Falha ao enviar email: ${getErrorMessage(error)}`);
   }
 }
 
@@ -104,31 +105,6 @@ export async function sendVerificationEmail(email: string, verifyLink: string): 
   );
 }
 
-/**
- * Email de boas-vindas com link para definir a senha.
- * ⚠️ NUNCA enviar a senha por email — apenas link de ativação.
- */
-export async function sendPendingApproval(email: string, nome: string): Promise<boolean> {
-  const nomeSeguro = escapeHtml(nome);
-  return sendEmail(
-    email,
-    'Cadastro recebido - Controle de Vendas e Finanças',
-    `<div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px">
-      <h2 style="color:#059669">Olá, ${nomeSeguro}!</h2>
-      <p>Seu cadastro foi recebido com sucesso!</p>
-      <p>Sua solicitação está <strong>aguardando análise</strong> do administrador. Você receberá outro e-mail assim que sua conta for aprovada.</p>
-      <p><strong>O que acontece agora?</strong></p>
-      <ul>
-        <li>✅ Cadastro recebido</li>
-        <li>⏳ Análise do administrador</li>
-        <li>📧 Você receberá um e-mail de confirmação</li>
-        <li>🚀 Acesso liberado ao sistema</li>
-      </ul>
-      <p style="color:#6b7280;font-size:12px">Se tiver dúvidas, entre em contato pelo WhatsApp (11) 96640-1931</p>
-    </div>`
-  );
-}
-
 export async function sendAccountApproved(para: string, nome: string, emailUsuario?: string): Promise<boolean> {
   const nomeSeguro = escapeHtml(nome);
   const emailExibido = emailUsuario ? escapeHtml(emailUsuario) : escapeHtml(para);
@@ -148,7 +124,7 @@ export async function sendAccountApproved(para: string, nome: string, emailUsuar
   );
 }
 
-export async function sendNewTicketNotification(storeName: string, subject: string, ticketId: string): Promise<boolean> {
+export async function sendNewTicketNotification(storeName: string, subject: string, _ticketId: string): Promise<boolean> {
   return sendEmail(
     'contato@lancepelozap.com.br',
     `[Chamado] ${subject} - ${storeName}`,
@@ -159,29 +135,6 @@ export async function sendNewTicketNotification(storeName: string, subject: stri
       <a href="https://app.lancepelozap.com.br/admin/chamados" style="display:inline-block;background:#059669;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;margin:16px 0">
         Ver Chamado
       </a>
-    </div>`
-  );
-}
-
-export async function sendWelcomeEmail(
-  email: string,
-  nome: string,
-  activationLink: string
-): Promise<boolean> {
-  const nomeSeguro = escapeHtml(nome);
-  const link = escapeHtml(activationLink);
-  return sendEmail(
-    email,
-    'Bem-vindo ao Lance Pelo Zap!',
-    `<div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px">
-      <h2 style="color:#059669">Bem-vindo, ${nomeSeguro}!</h2>
-      <p>Sua conta foi criada com sucesso.</p>
-      <p><strong>Email de acesso:</strong> ${escapeHtml(email)}</p>
-      <p>Clique no link abaixo para ativar sua conta e definir sua senha:</p>
-      <a href="${link}" style="display:inline-block;background:#059669;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;margin:16px 0">
-        Ativar Minha Conta
-      </a>
-      <p style="color:#6b7280;font-size:12px">Este link expira em 24 horas.</p>
     </div>`
   );
 }

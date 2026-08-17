@@ -2,7 +2,7 @@ import express, { Request, Response, NextFunction } from "express";
 import helmet from "helmet";
 import cors from "cors";
 import cookieParser from "cookie-parser";
-import { randomUUID } from "crypto";
+import rateLimit from "express-rate-limit";
 import jwt from "jsonwebtoken";
 import { logger, runWithContext } from "./lib/logger";
 import { verifyJwt } from "./lib/jwt";
@@ -126,7 +126,7 @@ function buildCSP(isProd: boolean): string {
   ].join(';');
 }
 
-app.use((req, res, next) => {
+app.use((_req, res, next) => {
   res.setHeader('Content-Security-Policy', buildCSP(process.env.NODE_ENV === 'production'));
   next();
 });
@@ -203,8 +203,6 @@ import { jobsRoutes } from './routes/jobs.routes';
 // Limiters distribuídos por rota (IP + usuário quando autenticado, minuto + hora).
 // Webhook do Mercado Pago fica com limiter local (IP fixo do MP, sem contexto de usuário).
 const webhookLimiter = rateLimit({ windowMs: 60 * 1000, max: 20, message: { error: 'Muitas requisições de webhook.' }, standardHeaders: true, legacyHeaders: false });
-import rateLimit from 'express-rate-limit';
-
 const superAdminLimiter = rateLimitDistributed({
   keyPrefix: 'admin',
   keys: { ip: true, user: true },
@@ -442,7 +440,7 @@ app.get('/api/metrics/prometheus', requireAuth, requireInternalTeam, (_req, res)
 });
 
 // Rota de fallback para healthcheck
-app.get("/api/health", (req, res) => {
+app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 

@@ -16,7 +16,7 @@ export interface VarreduraConfig {
   toleranciaAcessoDias: number;
 }
 
-export const DEFAULT_CONFIG: VarreduraConfig = {
+const DEFAULT_CONFIG: VarreduraConfig = {
   escalonamento: [1, 3, 7],
   bloqueioAposDias: 15,
   avisoBloqueioDias: 7,

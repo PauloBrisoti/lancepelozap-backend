@@ -1,4 +1,3 @@
-import { User } from "@prisma/client";
 import { comparePassword } from "../utils/password";
 import jwt from "jsonwebtoken";
 import { prisma } from "../lib/prisma";

@@ -19,7 +19,7 @@ export class PlanilhaController {
       }
 
       return ok(res, result);
-    } catch (error: any) {
+    } catch (error: unknown) {
       if (req.file && fs.existsSync(req.file.path)) {
         fs.unlinkSync(req.file.path);
       }
@@ -61,7 +61,7 @@ export class PlanilhaController {
           rows: p.rowCount,
         })),
       });
-    } catch (error: any) {
+    } catch (error: unknown) {
       if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
       return fail(res, '', 400);
     }

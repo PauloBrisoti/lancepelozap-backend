@@ -1,3 +1,4 @@
+import { getErrorCode } from '../lib/errors';
 import { Request, Response } from "express";
 import { logger } from '../lib/logger';
 import { prisma } from "../lib/prisma";
@@ -189,11 +190,11 @@ export const deleteCustomer = asyncHandler(async (req: Request, res: Response) =
     });
 
     return res.json({ message: "Cliente excluído com sucesso." });
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error("Erro ao excluir cliente:", error);
     
     // Erro de foreign key, ex: cliente tem vendas atreladas
-    if (error.code === 'P2003') {
+    if (getErrorCode(error) === 'P2003') {
       return res.status(400).json({ error: "Não é possível excluir este cliente pois existem vendas atreladas a ele." });
     }
 

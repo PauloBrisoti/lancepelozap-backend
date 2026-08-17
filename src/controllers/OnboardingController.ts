@@ -1,7 +1,6 @@
 import { Request, Response } from 'express';
 import { logger } from '../lib/logger';
 import { hashPassword } from "../utils/password";
-import jwt from 'jsonwebtoken';
 import { prisma } from '../lib/prisma';
 import { generateToken, sha256Hex } from '../utils/tokens';
 import { asyncHandler } from '../lib/asyncHandler';
@@ -49,7 +48,7 @@ export const registerTenant = asyncHandler(async (req: Request, res: Response) =
   const workspaceType = req.body.workspaceType || (selectedPlan.nome.includes("PF") ? "PF" : "PJ");
 
   // 3. Criar Client -> Control -> Store -> Users -> Subscription
-  const transactionResult = await prisma.$transaction(async (tx) => {
+  await prisma.$transaction(async (tx) => {
     const newClient = await tx.client.create({
       data: {
         nomeCompleto: nomeFantasia,

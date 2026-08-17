@@ -4,7 +4,6 @@ import { buildDateRange, calcPrevBounds } from '../lib/dateUtils';
 import { startOfDay } from 'date-fns';
 import { asyncHandler, getStoreId } from '../lib/asyncHandler';
 
-type Decimal = { toString: () => string };
 
 export class DashboardPJController {
   static getDashboardMetrics = asyncHandler(async (req: Request, res: Response) => {
@@ -14,8 +13,6 @@ export class DashboardPJController {
     const queryEnd = req.query.endDate as string;
     const { firstDay, lastDay } = buildDateRange(queryStart, queryEnd);
     const { prevFirstDay, prevLastDay } = calcPrevBounds(firstDay, lastDay);
-
-    const daysDiff = Math.round((lastDay.getTime() - firstDay.getTime()) / (1000 * 60 * 60 * 24)) || 1;
 
     // 0. SALDO ACUMULADO (saldos reais das carteiras)
     const wallets = await prisma.wallet.findMany({ where: { storeId } });

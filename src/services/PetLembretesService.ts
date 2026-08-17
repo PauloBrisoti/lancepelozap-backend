@@ -1,7 +1,8 @@
+import { getErrorMessage } from '../lib/errors';
 import { prisma } from "../lib/prisma";
 import { logger } from '../lib/logger';
 import { sendWhatsApp } from "./whatsapp.service";
-import { startOfDay, addDays, differenceInCalendarDays } from "date-fns";
+import { startOfDay, addDays } from "date-fns";
 
 function log(msg: string) {
   logger.debug(`[PetLembretes] ${new Date().toISOString()} ${msg}`);
@@ -54,8 +55,8 @@ export async function enviarLembreteRecorrencia(storeId: string, ordemId: string
     const msg = `Olá ${ordem.pet.tutor.nome}! Confirmamos a cobrança recorrente de ${servicos} do ${ordem.pet.nome}. A próxima parcela (R$ ${valor.toFixed(2)}) está agendada para ${data}. Obrigado!`;
     const ok = await enviar(store, normalizarTelefone(ordem.pet.tutor.telefone), msg);
     log(`Lembrete recorrência ordem ${ordemId}: ${ok ? "enviado" : "falhou/inválido"}`);
-  } catch (err: any) {
-    log(`Erro lembrete recorrência: ${err.message}`);
+  } catch (err: unknown) {
+    log(`Erro lembrete recorrência: ${getErrorMessage(err)}`);
   }
 }
 
@@ -97,13 +98,13 @@ export async function processarLembretesHospedagem() {
           enviados++;
           log(`Lembrete hospedagem ${ordem.id} enviado`);
         }
-      } catch (err: any) {
-        log(`Erro ordem ${ordem.id}: ${err.message}`);
+      } catch (err: unknown) {
+        log(`Erro ordem ${ordem.id}: ${getErrorMessage(err)}`);
       }
     }
     log(`Lembretes de hospedagem enviados: ${enviados}`);
-  } catch (err: any) {
-    log(`Erro geral: ${err.message}`);
+  } catch (err: unknown) {
+    log(`Erro geral: ${getErrorMessage(err)}`);
   }
 }
 

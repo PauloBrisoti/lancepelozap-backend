@@ -1,3 +1,4 @@
+import { getErrorMessage } from '../lib/errors';
 import { Request, Response } from "express";
 import { logger } from '../lib/logger';
 import { prisma } from "../lib/prisma";
@@ -750,10 +751,10 @@ export class PurchaseOrderController {
       });
 
       res.json(order);
-    } catch (error: any) {
+    } catch (error: unknown) {
       logger.error("Erro ao reverter pedido:", error);
-      if (error.message && error.message.startsWith("Operacao negada:")) {
-        return res.status(400).json({ message: error.message });
+      if (getErrorMessage(error) && getErrorMessage(error).startsWith("Operacao negada:")) {
+        return res.status(400).json({ message: getErrorMessage(error) });
       }
       res.status(500).json({ message: "Erro interno do servidor" });
     }

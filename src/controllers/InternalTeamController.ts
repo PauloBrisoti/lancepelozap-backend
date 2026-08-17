@@ -7,7 +7,7 @@ import { asyncHandler } from "../lib/asyncHandler";
 
 export class InternalTeamController {
   // Lista usuários internos
-  listUsers = asyncHandler(async (req: Request, res: Response) => {
+  listUsers = asyncHandler(async (_req: Request, res: Response) => {
       // SEGURANÇA: whitelist de campos — nunca expor senhaHash/resetToken/twoFactorSecret
       const users = await prisma.user.findMany({
         where: {
@@ -188,7 +188,7 @@ export class InternalTeamController {
   }, "revogar acesso");
 
   // Lista todos os papéis e permissões
-  listRoles = asyncHandler(async (req: Request, res: Response) => {
+  listRoles = asyncHandler(async (_req: Request, res: Response) => {
       const includeRoles = {
         permissions: true,
         _count: { select: { users: true } },

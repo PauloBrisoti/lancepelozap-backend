@@ -1,3 +1,4 @@
+import { getErrorMessage } from '../lib/errors';
 import { Request, Response } from 'express';
 import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
@@ -155,8 +156,8 @@ export class ImportController {
         successCount, 
         errorCount 
       });
-    } catch (error: any) {
-      logger.error('imports.log', { err: `[FATAL ERROR CUSTOMERS] ${error.message}\n${error.stack}\n` });
+    } catch (error: unknown) {
+      logger.error('imports.log', { err: `[FATAL ERROR CUSTOMERS] ${getErrorMessage(error)}\n${error instanceof Error ? error.stack : ""}\n` });
       if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
       return res.status(400).json({ error: '' });
     }
@@ -282,12 +283,6 @@ export class ImportController {
 
       for (const row of results) {
         try {
-          // Flexible key matching for Portuguese headers
-          const getVal = (keys: string[]) => {
-            const key = Object.keys(row).find(k => keys.includes(k.toLowerCase().trim()));
-            return key ? row[key] : null;
-          };
-
           const nomeKey = Object.keys(row).find(k => ['nome', 'nome do produto', 'produto', 'descrição', 'titulo'].includes(k.toLowerCase().trim()));
           const nome = nomeKey ? row[nomeKey] : null;
 
@@ -365,8 +360,8 @@ export class ImportController {
         successCount, 
         errorCount 
       });
-    } catch (error: any) {
-      logger.error('imports.log', { err: `[FATAL ERROR PRODUCTS] ${error.message}\n${error.stack}\n` });
+    } catch (error: unknown) {
+      logger.error('imports.log', { err: `[FATAL ERROR PRODUCTS] ${getErrorMessage(error)}\n${error instanceof Error ? error.stack : ""}\n` });
       if (req.file) fs.unlinkSync(req.file.path);
       return res.status(400).json({ error: '' });
     }

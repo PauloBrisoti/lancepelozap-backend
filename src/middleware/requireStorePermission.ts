@@ -3,7 +3,6 @@ import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 import { fail } from '../lib/response';
 
-type StoreRole = 'GERENTE' | 'VENDEDOR' | 'CAIXA' | 'MANAGER' | 'ADMIN';
 type StoreAction = 
   | 'vender'           // Qualquer venda
   | 'vender_crediario' // Vender no fiado

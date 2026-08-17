@@ -1,5 +1,4 @@
 import { Request, Response } from 'express';
-import { logger } from '../lib/logger';
 import { asyncHandler } from "../lib/asyncHandler";
 import { prisma } from '../lib/prisma';
 
