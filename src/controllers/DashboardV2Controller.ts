@@ -1,7 +1,7 @@
 import { Request, Response } from "express";
 import { prisma } from "../lib/prisma";
 import { addDays, addMonths, startOfMonth, endOfMonth, format } from "date-fns";
-import { toZonedTime } from "date-fns-tz";
+import { toZonedTime, fromZonedTime } from "date-fns-tz";
 import { buildDateRange, getTimezone, calcPrevBounds } from "../lib/dateUtils";
 import { asyncHandler, getStoreId } from "../lib/asyncHandler";
 
@@ -17,10 +17,25 @@ export class DashboardV2Controller {
     const prevEndDate = new Date(startDate.getTime() - 1);
 
     const vendasPeriodo = await prisma.sale.findMany({
-      where: { storeId, status: { not: "CANCELADA" }, dataVenda: { gte: startDate, lte: endDate } },
+      where: { storeId, status: "FINALIZADA", dataVenda: { gte: startDate, lte: endDate } },
       include: { saleItems: { include: { product: { include: { category: true } } } } }
     });
     const qtdPedidosPeriodo = vendasPeriodo.length;
+
+    // Vendas do Dia (competência, fuso da loja) — apenas vendas FINALIZADA
+    const tz = getTimezone();
+    const agoraTz = toZonedTime(new Date(), tz);
+    const hojeInicio = fromZonedTime(`${format(agoraTz, "yyyy-MM-dd")}T00:00:00`, tz);
+    const hojeFim = fromZonedTime(`${format(agoraTz, "yyyy-MM-dd")}T23:59:59.999`, tz);
+    const vendasHojeAgg = await prisma.sale.aggregate({
+      where: { storeId, status: "FINALIZADA", dataVenda: { gte: hojeInicio, lte: hojeFim } },
+      _sum: { valorTotalBruto: true, valorDesconto: true, valorTaxasGateway: true },
+      _count: true
+    });
+    const vendasHoje = Number(vendasHojeAgg._sum.valorTotalBruto || 0)
+      - Number(vendasHojeAgg._sum.valorDesconto || 0)
+      - Number(vendasHojeAgg._sum.valorTaxasGateway || 0);
+    const pedidosHoje = vendasHojeAgg._count;
     const faturamentoBruto = vendasPeriodo.reduce((acc, sale) => acc + Number(sale.valorTotalBruto), 0);
     const descontos = vendasPeriodo.reduce((acc, sale) => acc + Number(sale.valorDesconto || 0), 0);
     const taxas = vendasPeriodo.reduce((acc, sale) => acc + Number(sale.valorTaxasGateway || 0), 0);
@@ -37,17 +52,19 @@ export class DashboardV2Controller {
 
     // Comparativo por competência (mesma base do DRE), neutro quando não há vendas anteriores
     const prevSalesAgg = await prisma.sale.aggregate({
-      where: { storeId, status: { not: "CANCELADA" }, dataVenda: { gte: prevStartDate, lte: prevEndDate } },
+      where: { storeId, status: "FINALIZADA", dataVenda: { gte: prevStartDate, lte: prevEndDate } },
       _sum: { valorTotalBruto: true, valorDesconto: true, valorTaxasGateway: true }
     });
     const prevFaturamentoLiquido = Number(prevSalesAgg._sum.valorTotalBruto || 0) - Number(prevSalesAgg._sum.valorDesconto || 0) - Number(prevSalesAgg._sum.valorTaxasGateway || 0);
     const faturamentoCrescimento = prevFaturamentoLiquido === 0 ? 0 : ((faturamentoLiquido - prevFaturamentoLiquido) / prevFaturamentoLiquido) * 100;
 
-    const todasReceitas = await prisma.financialTransaction.aggregate({
-      where: { storeId, tipo: "ENTRADA", status: "ATIVA" },
-      _sum: { valor: true }
+    const todasVendasAgg = await prisma.sale.aggregate({
+      where: { storeId, status: "FINALIZADA" },
+      _sum: { valorTotalBruto: true, valorDesconto: true, valorTaxasGateway: true }
     });
-    const faturamentoTotal = Number(todasReceitas._sum.valor || 0);
+    const faturamentoTotal = Number(todasVendasAgg._sum.valorTotalBruto || 0)
+      - Number(todasVendasAgg._sum.valorDesconto || 0)
+      - Number(todasVendasAgg._sum.valorTaxasGateway || 0);
 
     const storeSettings = await prisma.store.findUnique({
       where: { id: storeId }, select: { aliquotaImposto: true }
@@ -72,7 +89,7 @@ export class DashboardV2Controller {
 
     const [saidasFinanceirasAgg, despesasPeriodoAgg] = await Promise.all([
       prisma.financialTransaction.aggregate({
-        where: { storeId, tipo: "SAIDA", status: "ATIVA", dataTransacao: { gte: startDate, lte: endDate } },
+        where: { storeId, tipo: "SAIDA", status: "ATIVA", dataTransacao: { gte: startDate, lte: endDate }, categoria: { notIn: ["CANCELAMENTO"] } },
         _sum: { valor: true }
       }),
       prisma.financialTransaction.aggregate({
@@ -92,7 +109,7 @@ export class DashboardV2Controller {
     })).filter(p => Number(p.qtdEstoqueAtual) <= Number(p.estoqueMinimo));
 
     const ultimasVendas = await prisma.sale.findMany({
-      where: { storeId, status: { not: "CANCELADA" }, dataVenda: { gte: startDate, lte: endDate } },
+      where: { storeId, status: "FINALIZADA", dataVenda: { gte: startDate, lte: endDate } },
       orderBy: { dataVenda: "desc" }, take: 5, include: { customer: true }
     });
 
@@ -118,7 +135,7 @@ export class DashboardV2Controller {
         _sum: { valor: true }
       }),
       prisma.financialTransaction.aggregate({
-        where: { storeId, tipo: "SAIDA", status: "ATIVA", dataTransacao: { lte: endDate } },
+        where: { storeId, tipo: "SAIDA", status: "ATIVA", dataTransacao: { lte: endDate }, categoria: { notIn: ["CANCELAMENTO"] } },
         _sum: { valor: true }
       })
     ]);
@@ -129,7 +146,7 @@ export class DashboardV2Controller {
 
     const [recebiveisMes, parcelasFornecedoresAgg, despesasFixasAgg, pagamentosEstoqueAgg] = await Promise.all([
       prisma.accountReceivable.findMany({
-        where: { storeId, status: { not: "CANCELADA" } },
+        where: { storeId, status: { in: ["PENDENTE", "PAGO_PARCIAL"] } },
         select: { valorParcela: true, saleId: true, payments: { where: { tipo: "ENTRADA", status: "ATIVA" }, select: { valor: true } } }
       }),
       prisma.accountPayable.aggregate({ where: { storeId, status: "PENDENTE" }, _sum: { valor: true } }),
@@ -154,7 +171,6 @@ export class DashboardV2Controller {
     const capitalLivre = saldoCarteiras + aReceberFiado - parcelasFornecedoresMes;
 
     // Chart — consulta única agregada por dia/mês
-    const tz = getTimezone();
     const diffDays = Math.round((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
     const trunc = diffDays <= 31 ? 'day' : 'month';
     const chartRaw = trunc === 'day'
@@ -201,13 +217,13 @@ export class DashboardV2Controller {
     }
 
     return res.status(200).json({
-      vendasHoje: dinheiroCaixaRealizado,
+      vendasHoje,
       faturamentoPeriodo: faturamentoLiquido,
       faturamentoBruto, faturamentoLiquido, volumeVendasMes,
       impostosEstimados: Math.round(impostosEstimados * 100) / 100, aliquotaImposto,
       receitaLiquida: Math.round(receitaLiquida * 100) / 100,
       dinheiroCaixaRealizado, aReceberFiado, faturamentoCrescimento, faturamentoTotal,
-      pedidosHoje: qtdPedidosPeriodo, pedidosPeriodo: qtdPedidosPeriodo,
+      pedidosHoje, pedidosPeriodo: qtdPedidosPeriodo,
       ticketMedio: ticketMedioPeriodo,
       cmvPeriodo: Math.round(cmvPeriodo * 100) / 100,
       lucroBruto: Math.round(lucroBruto * 100) / 100,

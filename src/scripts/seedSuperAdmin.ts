@@ -12,7 +12,7 @@ async function main() {
   }
 
   const passwordHash = await hashPassword(passwordPlain);
-  const user = await prisma.user.create({
+  await prisma.user.create({
     data: {
       nome: "Super Administrador",
       email,

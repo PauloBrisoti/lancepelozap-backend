@@ -21,10 +21,6 @@ export function getJwtSecret(): string {
 /** Constante resolvida na carga do módulo. Lança em caso de má configuração. */
 export const JWT_SECRET: string = getJwtSecret();
 
-export function signJwt(payload: jwt.JwtPayload, options?: jwt.SignOptions): string {
-  return jwt.sign(payload, getJwtSecret(), options);
-}
-
 export function verifyJwt(token: string): jwt.JwtPayload | string {
   return jwt.verify(token, getJwtSecret());
 }

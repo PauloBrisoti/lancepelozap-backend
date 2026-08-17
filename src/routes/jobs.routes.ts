@@ -1,3 +1,4 @@
+import { getErrorMessage } from '../lib/errors';
 import { Router, Request, Response } from 'express';
 import { rateLimitDistributed, limitFor } from '../lib/rateLimit';
 import { requireCronSecret } from '../middleware/requireCronSecret';
@@ -25,8 +26,8 @@ const wrap = (fn: () => Promise<void>) => async (_req: Request, res: Response) =
   try {
     await fn();
     res.json({ ok: true, executedAt: new Date().toISOString() });
-  } catch (err: any) {
-    res.status(500).json({ ok: false, error: err?.message || 'Erro interno' });
+  } catch (err: unknown) {
+    res.status(500).json({ ok: false, error: getErrorMessage(err) || 'Erro interno' });
   }
 };
 

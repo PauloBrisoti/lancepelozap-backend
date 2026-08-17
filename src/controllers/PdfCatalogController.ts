@@ -1,3 +1,4 @@
+import { getErrorMessage } from '../lib/errors';
 import { Request, Response } from 'express';
 import { logger } from '../lib/logger';
 import { GoogleGenerativeAI } from '@google/generative-ai';
@@ -131,16 +132,16 @@ Não inclua crases (markdown), nem a palavra "json" na resposta, apenas retorne 
         parsedProducts
       });
 
-    } catch (error: any) {
+    } catch (error: unknown) {
       if (req.file && fs.existsSync(req.file.path)) {
         try { fs.unlinkSync(req.file.path); } catch (e) {}
       }
       logger.error('Erro na importação de PDF:', error);
       
       let errorMessage = 'Erro interno ao processar o PDF.';
-      if (error.message && error.message.includes('413')) {
+      if (getErrorMessage(error).includes('413')) {
         errorMessage = 'O PDF é muito grande para a Inteligência Artificial processar de uma só vez (limite de 20MB de texto/imagens diretas). Divida o PDF em partes menores.';
-      } else if (error.message && error.message.includes('400')) {
+      } else if (getErrorMessage(error).includes('400')) {
          errorMessage = 'Erro de comunicação com a Inteligência Artificial (Verifique se o arquivo não está corrompido ou é pesado demais).';
       }
 

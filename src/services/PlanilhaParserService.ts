@@ -1,8 +1,9 @@
+import { getErrorMessage } from '../lib/errors';
 import ExcelJS from 'exceljs';
 import { prisma } from '../lib/prisma';
 import fs from 'fs';
 import path from 'path';
-import { parseDate as parseLocalDate, todayInTimezone } from '../lib/dateUtils';
+import { parseDate as parseLocalDate } from '../lib/dateUtils';
 
 // ============================================================
 // SINÔNIMOS DE COLUNAS — Mapeamento semântico
@@ -190,7 +191,6 @@ export class PlanilhaParserService {
     const hasData = keyMatch(COLUMN_SYNONYMS.data);
     const hasVencimento = keyMatch(COLUMN_SYNONYMS.vencimento);
     const hasVendedor = keyMatch(COLUMN_SYNONYMS.vendedor);
-    const hasFormaPgto = keyMatch(COLUMN_SYNONYMS.formaPagamento);
     const hasTelefone = keyMatch(COLUMN_SYNONYMS.telefone);
 
     // Nome de produto vs cliente: partial match para capturar variações
@@ -326,8 +326,8 @@ export class PlanilhaParserService {
             warnings.push(`Aba "${sheet.name}" não foi reconhecida automaticamente. Colunas encontradas: ${columns.join(', ')}`);
             break;
         }
-      } catch (err: any) {
-        errors.push({ sheet: sheet.name, row: 0, field: '', message: `Erro ao processar aba: ${err.message}` });
+      } catch (err: unknown) {
+        errors.push({ sheet: sheet.name, row: 0, field: '', message: `Erro ao processar aba: ${getErrorMessage(err)}` });
       }
     }
 
@@ -493,9 +493,8 @@ export class PlanilhaParserService {
     });
   }
 
-  private static parseFuncionarios(rows: Record<string, string>[], data: ParsedData, errors: ValidationError[], sheet: string) {
-    rows.forEach((row, idx) => {
-      const linha = idx + 6;
+  private static parseFuncionarios(rows: Record<string, string>[], data: ParsedData, _errors: ValidationError[], _sheet: string) {
+    rows.forEach((row, _idx) => {
       const nome = this.getField(row, 'nome');
       if (!nome) return;
       data.funcionarios.push({
@@ -506,7 +505,7 @@ export class PlanilhaParserService {
     });
   }
 
-  private static parseFornecedores(rows: Record<string, string>[], data: ParsedData, errors: ValidationError[], sheet: string) {
+  private static parseFornecedores(rows: Record<string, string>[], data: ParsedData, _errors: ValidationError[], _sheet: string) {
     rows.forEach((row) => {
       const nome = this.getField(row, 'nome');
       if (!nome) return;
@@ -518,9 +517,8 @@ export class PlanilhaParserService {
     });
   }
 
-  private static parseEstoqueInicial(rows: Record<string, string>[], data: ParsedData, errors: ValidationError[], sheet: string) {
-    rows.forEach((row, idx) => {
-      const linha = idx + 6;
+  private static parseEstoqueInicial(rows: Record<string, string>[], data: ParsedData, _errors: ValidationError[], _sheet: string) {
+    rows.forEach((row, _idx) => {
       const nome = this.getField(row, 'nome') || this.getField(row, 'nomeCliente');
       if (!nome) return;
       // Atualizar estoque de produto existente ou criar novo
@@ -575,7 +573,7 @@ export class PlanilhaParserService {
   // ----------------------------------------------------------
   // 9. VALIDAÇÕES DE INTEGRIDADE
   // ----------------------------------------------------------
-  private static validateIntegrity(data: ParsedData, errors: ValidationError[], warnings: string[]) {
+  private static validateIntegrity(data: ParsedData, _errors: ValidationError[], warnings: string[]) {
     // Verificar se há vendas sem produtos cadastrados
     const nomesProdutos = new Set(data.produtos.map(p => p.nome.toLowerCase()));
 

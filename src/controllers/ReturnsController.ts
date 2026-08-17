@@ -210,7 +210,7 @@ export class ReturnsController {
       const updated = await ReturnsService.completeReturn(storeId, userId, returnId);
 
       res.json(updated);
-    } catch (error: any) {
+    } catch (error: unknown) {
       if (error instanceof ReturnsServiceError) {
         return res.status(error.httpCode).json({ message: error.message });
       }

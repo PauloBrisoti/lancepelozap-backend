@@ -1,3 +1,4 @@
+import { getErrorMessage } from '../lib/errors';
 import { Request, Response } from 'express';
 import { logger } from '../lib/logger';
 import { asyncHandler } from '../lib/asyncHandler';
@@ -337,8 +338,8 @@ export class SuperAdminController {
         store: { id: newStore.id, nomeFantasia: newStore.nomeFantasia },
         subscription: { id: newSubscription.id, statusPagamento: newSubscription.statusPagamento },
       });
-    } catch (error: any) {
-      logger.error('Erro ao criar cliente pelo super admin:', { err: error.message });
+    } catch (error: unknown) {
+      logger.error('Erro ao criar cliente pelo super admin:', { err: getErrorMessage(error) });
       return res.status(500).json({ error: 'Erro ao registrar cliente' });
     }
   }
@@ -511,7 +512,7 @@ export class SuperAdminController {
   // CONFIGURAÇÕES GLOBAIS (WHITE-LABEL)
   // ==========================================
 
-  async getSystemSettings(req: Request, res: Response) {
+  async getSystemSettings(_req: Request, res: Response) {
     try {
       // RBAC já validado na rota
 
@@ -564,7 +565,7 @@ export class SuperAdminController {
   }
 
   // Modo de emergência: bloqueia todo o painel para papéis não-raiz
-  async getLockdown(req: Request, res: Response) {
+  async getLockdown(_req: Request, res: Response) {
     try {
       const setting = await prisma.systemSetting.findUnique({ where: { chave: 'PAINEL_LOCKDOWN' } });
       return res.json({ enabled: setting?.valor === true });
@@ -728,8 +729,8 @@ export class SuperAdminController {
       );
 
       return res.json({ message: 'Email de teste enviado com sucesso!' });
-    } catch (error: any) {
-      return res.status(500).json({ error: `Falha ao enviar: ${error.message}` });
+    } catch (error: unknown) {
+      return res.status(500).json({ error: `Falha ao enviar: ${getErrorMessage(error)}` });
     }
   }
 
@@ -737,7 +738,7 @@ export class SuperAdminController {
   // APROVAÇÃO DE CADASTROS
   // ==========================================
 
-  async listPendingRegistrations(req: Request, res: Response) {
+  async listPendingRegistrations(_req: Request, res: Response) {
     try {
       const clients = await prisma.client.findMany({
         where: { status: 'PENDENTE' },
@@ -873,7 +874,7 @@ export class SuperAdminController {
         message: 'Banco zerado com sucesso! Usuários, planos e permissões foram preservados.',
         tabelasPreservadas: protectedTables,
       });
-    } catch (error: any) {
+    } catch (error: unknown) {
       return res.status(500).json({ error: 'Erro interno do servidor' });
     }
   }
@@ -882,7 +883,7 @@ export class SuperAdminController {
   // RELATÓRIOS FINANCEIROS SAAS
   // ==========================================
 
-  getFinancialReports = asyncHandler(async (req: Request, res: Response) => {
+  getFinancialReports = asyncHandler(async (_req: Request, res: Response) => {
     const hoje = toZonedTime(new Date(), getTimezone());
     const meses: { label: string; inicio: Date; fim: Date }[] = [];
 
@@ -962,7 +963,7 @@ export class SuperAdminController {
   // INADIMPLENTES
   // ==========================================
 
-  listOverdue = asyncHandler(async (req: Request, res: Response) => {
+  listOverdue = asyncHandler(async (_req: Request, res: Response) => {
     const overdueSubs = await prisma.subscription.findMany({
       where: { statusPagamento: { in: ['VENCIDO', 'PENDENTE'] } },
       include: {
@@ -1015,7 +1016,7 @@ export class SuperAdminController {
   // GESTÃO DE USUÁRIOS E SENHAS
   // ==========================================
 
-  async listAllUsers(req: Request, res: Response) {
+  async listAllUsers(_req: Request, res: Response) {
     try {
       const users = await prisma.user.findMany({
         orderBy: { nome: 'asc' },
@@ -1261,7 +1262,7 @@ export class SuperAdminController {
       });
 
       return res.json({ message: 'Cliente arquivado.' });
-    } catch (error: any) {
+    } catch (error: unknown) {
       return res.status(500).json({ error: '' });
     }
   }
@@ -1288,7 +1289,7 @@ export class SuperAdminController {
       });
 
       return res.json({ message: 'Cliente restaurado.' });
-    } catch (error: any) {
+    } catch (error: unknown) {
       return res.status(500).json({ error: '' });
     }
   }
@@ -1325,7 +1326,7 @@ export class SuperAdminController {
       });
 
       return res.json({ message: 'Cliente e todos os dados associados foram excluídos definitivamente.' });
-    } catch (error: any) {
+    } catch (error: unknown) {
       return res.status(500).json({ error: '' });
     }
   }
@@ -1371,7 +1372,7 @@ export class SuperAdminController {
   async changeSubscriptionPlan(req: Request, res: Response) {
     try {
       const id = req.params.id as string;
-      const { planId, valorMensalidade, dataVencimento } = req.body;
+      const { planId, dataVencimento } = req.body;
 
       const subscription = await prisma.subscription.findUnique({ where: { id } });
       if (!subscription) return res.status(404).json({ error: 'Assinatura não encontrada' });
@@ -1464,7 +1465,7 @@ export class SuperAdminController {
   // LOGS DE AUDITORIA
   // ==========================================
 
-  async getAuditLogs(req: Request, res: Response) {
+  async getAuditLogs(_req: Request, res: Response) {
     try {
       // RBAC já validado na rota
       
@@ -1516,7 +1517,7 @@ export class SuperAdminController {
   // ANÚNCIOS IN-APP (#4)
   // ==========================================
 
-  async listAnnouncements(req: Request, res: Response) {
+  async listAnnouncements(_req: Request, res: Response) {
     try {
       const settings = await prisma.systemSetting.findUnique({ where: { chave: 'ANNOUNCEMENTS' } });
       return res.json(settings?.valor || []);
@@ -1588,7 +1589,7 @@ export class SuperAdminController {
     return resolved.startsWith(this.BACKUPS_DIR + path.sep) ? resolved : null;
   }
 
-  async listBackups(req: Request, res: Response) {
+  async listBackups(_req: Request, res: Response) {
     try {
       if (!fs.existsSync(this.BACKUPS_DIR)) return res.json([]);
       const files = fs.readdirSync(this.BACKUPS_DIR)
@@ -1604,7 +1605,7 @@ export class SuperAdminController {
     }
   }
 
-  async triggerBackup(req: Request, res: Response) {
+  async triggerBackup(_req: Request, res: Response) {
     try {
       const backupFile = `backup-${Date.now()}.sql`;
       const dbUrl = process.env.DATABASE_URL;
@@ -1661,7 +1662,7 @@ export class SuperAdminController {
   // MODO MANUTENÇÃO (#7)
   // ==========================================
 
-  async getMaintenanceMode(req: Request, res: Response) {
+  async getMaintenanceMode(_req: Request, res: Response) {
     try {
       const settings = await prisma.systemSetting.findUnique({ where: { chave: 'MAINTENANCE_MODE' } });
       return res.json(settings?.valor || { enabled: false, message: '' });
@@ -1688,7 +1689,7 @@ export class SuperAdminController {
   // API KEYS (#8)
   // ==========================================
 
-  async listApiKeys(req: Request, res: Response) {
+  async listApiKeys(_req: Request, res: Response) {
     try {
       const settings = await prisma.systemSetting.findUnique({ where: { chave: 'API_KEYS' } });
       return res.json(settings?.valor || []);
@@ -1715,7 +1716,7 @@ export class SuperAdminController {
   // LOGS DO SERVIDOR (#9) — Últimas N linhas
   // ==========================================
 
-  async getSystemStatus(req: Request, res: Response) {
+  async getSystemStatus(_req: Request, res: Response) {
     try {
       const os = await import('os');
       const { execSync } = await import('child_process');
@@ -1799,7 +1800,7 @@ export class SuperAdminController {
         platform: process.platform,
         env: process.env.NODE_ENV || 'development',
       });
-    } catch (error: any) {
+    } catch (error: unknown) {
       return res.status(500).json({ error: 'Erro interno do servidor' });
     }
   }
@@ -1908,8 +1909,8 @@ export class SuperAdminController {
       });
 
       return res.json({ message: "Login na loja efetuado com sucesso" });
-    } catch (error: any) {
-      logger.error('Erro ao acessar painel da loja:', { err: error.message });
+    } catch (error: unknown) {
+      logger.error('Erro ao acessar painel da loja:', { err: getErrorMessage(error) });
       return res.status(500).json({ error: "Erro ao acessar painel da loja" });
     }
   }
@@ -1993,8 +1994,8 @@ export class SuperAdminController {
       });
 
       return res.json(logs);
-    } catch (error: any) {
-      logger.error('Erro ao buscar logs de impersonação:', { err: error.message });
+    } catch (error: unknown) {
+      logger.error('Erro ao buscar logs de impersonação:', { err: getErrorMessage(error) });
       return res.status(500).json({ error: 'Erro ao buscar logs de impersonação' });
     }
   }
@@ -2063,8 +2064,8 @@ export class SuperAdminController {
         control: { id: result.control.id, nome: result.control.nome, tipo: result.control.tipo },
         store: { id: result.store.id, nome: result.store.nomeFantasia }
       });
-    } catch (error: any) {
-      logger.error('Erro ao criar controle PF:', { err: error.message });
+    } catch (error: unknown) {
+      logger.error('Erro ao criar controle PF:', { err: getErrorMessage(error) });
       return res.status(500).json({ error: 'Erro ao criar controle PF' });
     }
   }
@@ -2082,7 +2083,7 @@ export class SuperAdminController {
 
     const { features } = req.body;
 
-    const updated = await prisma.store.update({
+    await prisma.store.update({
       where: { id: storeId },
       data: { features: features ? JSON.stringify(features) : null },
     });
@@ -2090,7 +2091,7 @@ export class SuperAdminController {
     return res.json({ message: 'Features atualizadas', features: features || {} });
   }, "atualizar features da loja");
 
-  triggerBilling = asyncHandler(async (req: Request, res: Response) => {
+  triggerBilling = asyncHandler(async (_req: Request, res: Response) => {
     const plano = await buildPlan();
     const { jaExecutadoHoje, resultado } = await executePlan(plano, 'manual');
     if (!jaExecutadoHoje) {
@@ -2107,7 +2108,7 @@ export class SuperAdminController {
   }, "executar varredura financeira");
 
   // Dry-run da varredura: simula sem executar nada
-  getScanPlan = asyncHandler(async (req: Request, res: Response) => {
+  getScanPlan = asyncHandler(async (_req: Request, res: Response) => {
     const plano = await buildPlan();
     return res.json(plano);
   }, "montar plano de varredura");
@@ -2127,7 +2128,7 @@ export class SuperAdminController {
   }, "executar varredura");
 
   // Histórico de execuções da varredura
-  getScanRuns = asyncHandler(async (req: Request, res: Response) => {
+  getScanRuns = asyncHandler(async (_req: Request, res: Response) => {
     const runs = await prisma.scanRun.findMany({
       orderBy: { data: 'desc' },
       take: 10,

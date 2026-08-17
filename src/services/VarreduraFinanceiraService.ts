@@ -1,3 +1,4 @@
+import { getErrorMessage } from '../lib/errors';
 import { prisma } from "../lib/prisma";
 import { logger } from '../lib/logger';
 import { startOfDay, differenceInCalendarDays, format } from "date-fns";
@@ -168,8 +169,8 @@ async function enviarNotificacao(item: PlanoItem, tipo: string): Promise<boolean
       templateNotificacao(item.cliente, item.diasAtraso, item.valor, tipo)
     );
     return true;
-  } catch (err: any) {
-    log(`Falha ao enviar ${tipo} para ${item.email}: ${err?.message}`);
+  } catch (err: unknown) {
+    log(`Falha ao enviar ${tipo} para ${item.email}: ${getErrorMessage(err)}`);
     return false;
   }
 }
@@ -302,8 +303,8 @@ export async function enviarRelatorio(plano: PlanoVarredura, resultado: any, dis
         ${linhas ? `<h3>Detalhes</h3><ul>${linhas}</ul>` : "<p>Nenhuma ação necessária.</p>"}
       </div>`
     );
-  } catch (err: any) {
-    log(`Falha ao enviar relatório: ${err?.message}`);
+  } catch (err: unknown) {
+    log(`Falha ao enviar relatório: ${getErrorMessage(err)}`);
   }
 }
 
@@ -314,7 +315,7 @@ export async function executarVarreduraAutomatica() {
     if (!jaExecutadoHoje) {
       await enviarRelatorio(plano, resultado, "cron");
     }
-  } catch (error: any) {
-    log(`ERRO na varredura automática: ${error?.message}`);
+  } catch (err: unknown) {
+    log(`ERRO na varredura automática: ${getErrorMessage(err)}`);
   }
 }

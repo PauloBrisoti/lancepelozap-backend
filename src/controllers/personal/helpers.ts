@@ -77,11 +77,3 @@ export async function getCycleRange(userId: string, mes: number, ano: number): P
     end: fromZonedTime(endStr, tz),
   };
 }
-
-export async function getUserBillingDay(userId: string): Promise<number> {
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { billingCycleStartDay: true },
-  });
-  return user?.billingCycleStartDay || 1;
-}

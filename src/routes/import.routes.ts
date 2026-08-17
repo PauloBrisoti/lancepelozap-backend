@@ -5,7 +5,6 @@ import { PdfCatalogController } from '../controllers/PdfCatalogController';
 import { requireAuth } from '../middleware/auth';
 import { validateUpload, SPREADSHEET_KINDS, DOCUMENT_KINDS } from '../lib/fileValidation';
 import multer from 'multer';
-import path from 'path';
 
 const router = Router();
 const importController = new ImportController();
@@ -14,7 +13,7 @@ const importController = new ImportController();
 const upload = multer({ 
   dest: 'uploads/temp/',
   limits: { fileSize: 50 * 1024 * 1024 }, // 50MB max
-  fileFilter: (req, file, cb) => {
+  fileFilter: (_req, file, cb) => {
     const allowedExtensions = ['.csv', '.xlsx', '.pdf'];
     const isAllowed = allowedExtensions.some(ext => file.originalname.toLowerCase().endsWith(ext));
     if (isAllowed) {

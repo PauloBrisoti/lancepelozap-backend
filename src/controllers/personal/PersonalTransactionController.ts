@@ -1,3 +1,4 @@
+import { getErrorMessage } from '../../lib/errors';
 import { Request, Response } from 'express';
 import { logger } from '../../lib/logger';
 import { prisma } from '../../lib/prisma';
@@ -80,9 +81,9 @@ export class PersonalTransactionController {
       });
 
       return res.status(201).json(transaction);
-    } catch (error: any) {
-      logger.error('Erro ao criar transação PF:', { err: error?.message || error });
-      return res.status(400).json({ error: error?.message || 'Erro interno' });
+    } catch (error: unknown) {
+      logger.error('Erro ao criar transação PF:', { err: getErrorMessage(error) || error });
+      return res.status(400).json({ error: getErrorMessage(error) || 'Erro interno' });
     }
   }
 
@@ -95,7 +96,7 @@ export class PersonalTransactionController {
       const existing = await prisma.personalTransaction.findFirst({ where: { id, userId } });
       if (!existing) return res.status(404).json({ error: 'Transação não encontrada' });
 
-      const { categoryId, walletId, tipo, valor, descricao, data, dataTransacao, dataVencimento, dataCompetencia, recorrente, parcelas, observacoes, pago, formaPagamento } = req.body;
+      const { categoryId, walletId, tipo, valor, descricao, dataVencimento, dataCompetencia, recorrente, parcelas, observacoes, pago, formaPagamento } = req.body;
       const transaction = await prisma.personalTransaction.update({
         where: { id },
         data: {

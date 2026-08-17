@@ -1,4 +1,4 @@
-import { Router, Request, Response, NextFunction } from 'express';
+import { Router } from 'express';
 import { SuperAdminController } from '../controllers/SuperAdminController';
 import { InternalTeamController } from '../controllers/InternalTeamController';
 import { PlanController } from '../controllers/PlanController';

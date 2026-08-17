@@ -14,7 +14,7 @@ const getScopedClientId = async (req: Request): Promise<string | null> => {
 };
 
 // Injeta req.scopedClientId para que listagens filtrem pelo escopo do papel
-export const scopedClientFilter = async (req: Request, res: Response, next: NextFunction) => {
+export const scopedClientFilter = async (req: Request, _res: Response, next: NextFunction) => {
   try {
     (req as any).scopedClientId = await getScopedClientId(req);
     next();

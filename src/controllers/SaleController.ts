@@ -1,3 +1,4 @@
+import { getErrorMessage } from '../lib/errors';
 import { Request, Response } from "express";
 import { logger } from '../lib/logger';
 import { asyncHandler } from "../lib/asyncHandler";
@@ -9,6 +10,7 @@ import { WhatsAppService } from "../services/WhatsAppService";
 import { FeeCalculationService } from "../services/FeeCalculationService";
 import { comparePassword } from "../utils/password";
 import { buildDateRange, parseDate } from "../lib/dateUtils";
+import { CATEGORIA_CANCELAMENTO } from "../lib/categorias";
 
 export class SaleController {
   summary = asyncHandler(async (req: Request, res: Response) => {
@@ -114,7 +116,6 @@ export class SaleController {
 
       const salesWithMargins = sales.map(s => {
         const valorBruto = Number(s.valorTotalBruto);
-        const valorDesconto = Number(s.valorDesconto);
         const valorTaxas = Number(s.valorTaxasGateway);
         const cmvTotal = Number(s.cmvTotal);
         const valorLiquido = Number(s.valorTotalLiquido);
@@ -163,9 +164,9 @@ export class SaleController {
       });
 
       res.json(salesWithMargins);
-    } catch (error: any) {
+    } catch (error: unknown) {
       logger.error("Erro ao listar vendas:", error);
-      res.status(500).json({ message: "Erro interno do servidor", detail: error.message });
+      res.status(500).json({ message: "Erro interno do servidor", detail: getErrorMessage(error) });
     }
   }
 
@@ -533,9 +534,9 @@ export class SaleController {
           } catch { /* silent */ }
         })();
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       logger.error("Erro ao criar venda:", error);
-      res.status(400).json({ message: error.message || "Erro ao processar a venda" });
+      res.status(400).json({ message: getErrorMessage(error) || "Erro ao processar a venda" });
     }
   }
 
@@ -787,13 +788,12 @@ export class SaleController {
       });
 
       res.json({ message: "Venda atualizada com sucesso", sale: updated });
-    } catch (error: any) {
+    } catch (error: unknown) {
       logger.error("Erro ao atualizar venda:", error);
-      res.status(500).json({ message: error.message || "Erro ao atualizar venda" });
+      res.status(500).json({ message: getErrorMessage(error) || "Erro ao atualizar venda" });
     }
   }
-
-  async cancel(req: Request, res: Response) {
+async cancel(req: Request, res: Response) {
     try {
       const storeId = req.user?.storeId || (req.user as any)?.tenant_id;
       if (!storeId) {
@@ -845,7 +845,7 @@ export class SaleController {
           });
         }
 
-        // 2. Reverter financeiro com estorno (audit trail)
+        // 2. Reverter financeiro com estorno
         for (const transaction of sale.financialTransactions) {
           if (transaction.tipo === 'ENTRADA') {
             // 2a. Marca a transação original como estornada
@@ -853,7 +853,8 @@ export class SaleController {
               where: { id: transaction.id },
               data: { status: 'ESTORNADA' }
             });
-            // 2b. Cria transação de reversão (SAIDA = dinheiro saindo)
+
+            // 2b. Cria espelho de SAIDA (artefato contábil do cancelamento)
             await tx.financialTransaction.create({
               data: {
                 storeId: sale.storeId,
@@ -862,12 +863,13 @@ export class SaleController {
                 tipo: 'SAIDA',
                 status: 'ATIVA',
                 valor: transaction.valor,
-                descricao: `Estorno cancelamento #${sale.id.substring(0, 8)}`,
-                categoria: 'CANCELAMENTO',
-                dataTransacao: new Date()
+                descricao: `Cancelamento Venda #${sale.id.substring(0, 8)}`,
+                categoria: CATEGORIA_CANCELAMENTO,
+                dataTransacao: new Date(),
               }
             });
-            // 2c. Decrementa saldo da carteira
+
+            // 2c. Decrementa saldo real da carteira
             await tx.wallet.update({
               where: { id: transaction.walletId },
               data: { saldoAtual: { decrement: transaction.valor } }
@@ -904,9 +906,9 @@ export class SaleController {
       });
 
       res.json({ message: "Venda cancelada com sucesso", sale: result });
-    } catch (error: any) {
+    } catch (error: unknown) {
       logger.error("Erro ao cancelar venda:", error);
-      res.status(500).json({ message: "Erro interno do servidor", detail: error.message });
+      res.status(500).json({ message: "Erro interno do servidor", detail: getErrorMessage(error) });
     }
   }
 
@@ -942,9 +944,9 @@ export class SaleController {
         { expiresIn: "2m" }
       );
       res.json({ token, expiresIn: 120 });
-    } catch (error: any) {
+    } catch (error: unknown) {
       logger.error("Erro ao gerar token de exclusão:", error);
-      res.status(500).json({ message: "Erro interno do servidor", detail: error.message });
+      res.status(500).json({ message: "Erro interno do servidor", detail: getErrorMessage(error) });
     }
   }
 
@@ -1043,9 +1045,9 @@ export class SaleController {
       });
 
       res.json({ message: "Venda excluída permanentemente" });
-    } catch (error: any) {
+    } catch (error: unknown) {
       logger.error("Erro ao excluir venda:", error);
-      res.status(500).json({ message: "Erro interno do servidor", detail: error.message });
+      res.status(500).json({ message: "Erro interno do servidor", detail: getErrorMessage(error) });
     }
   }
 }

@@ -13,7 +13,7 @@ const settingsController = new SettingsController();
 
 // Configuração de multer para imagens (PIX)
 const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
+  destination: function (_req, _file, cb) {
     cb(null, 'uploads/')
   },
   filename: function (req, file, cb) {

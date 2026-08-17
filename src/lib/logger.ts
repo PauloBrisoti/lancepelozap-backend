@@ -49,7 +49,7 @@ export function setContext(partial: Partial<RequestContext>): void {
   else als.enterWith({ ...partial });
 }
 
-export function getContext(): RequestContext {
+function getContext(): RequestContext {
   return als.getStore() || {};
 }
 
