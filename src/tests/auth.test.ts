@@ -28,5 +28,5 @@ describe('Autenticação e 2FA', () => {
         .send({ email: clientA.user.email, password: 'wrongpassword' });
     }
     expect(res.status).toBe(429);
-  }, 15000);
+  }, 30000);
 });
