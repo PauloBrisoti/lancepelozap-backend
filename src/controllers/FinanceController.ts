@@ -287,16 +287,18 @@ export class FinanceController {
           for (let i = 0; i < parcelas; i++) {
             // Calculate due date
             const dtVencimento = new Date(dtTransacao);
+            // Se a 1ª parcela NÃO está paga, o plano de pagamento inicia no próximo período
+            const offset = primeiraPaga ? i : i + 1;
             if (freq === 'MENSAL') {
               const diaOriginal = new Date(dtTransacao).getDate();
-              dtVencimento.setMonth(dtVencimento.getMonth() + i);
+              dtVencimento.setMonth(dtVencimento.getMonth() + offset);
               if (dtVencimento.getDate() !== diaOriginal) {
                 dtVencimento.setDate(0); 
               }
             } else if (freq === 'SEMANAL') {
-              dtVencimento.setDate(dtVencimento.getDate() + (i * 7));
+              dtVencimento.setDate(dtVencimento.getDate() + (offset * 7));
             } else if (freq === 'QUINZENAL') {
-              dtVencimento.setDate(dtVencimento.getDate() + (i * 15));
+              dtVencimento.setDate(dtVencimento.getDate() + (offset * 15));
             }
 
             const isCurrentPaid = (i === 0 && primeiraPaga);

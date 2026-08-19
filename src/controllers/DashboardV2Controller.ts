@@ -424,8 +424,13 @@ export class DashboardV2Controller {
       { method: 'CREDIARIO', label: 'Crediário', value: pmBreakdown['CREDIARIO'] || 0 },
     ];
 
-    const faturamentoCrescimento = prevFatLiq === 0 ? 100 : ((faturamentoLiquido - prevFatLiq) / prevFatLiq) * 100;
-    const lucroCrescimento = prevLucroLiquido === 0 ? 100 : ((lucroLiquidoReal - prevLucroLiquido) / Math.abs(prevLucroLiquido)) * 100;
+    const faturamentoCrescimento = prevFatLiq === 0
+      ? (faturamentoLiquido > 0 ? 100 : 0)
+      : ((faturamentoLiquido - prevFatLiq) / prevFatLiq) * 100;
+
+    const lucroCrescimento = prevLucroLiquido === 0
+      ? (lucroLiquidoReal > 0 ? 100 : lucroLiquidoReal < 0 ? -100 : 0)
+      : ((lucroLiquidoReal - prevLucroLiquido) / Math.abs(prevLucroLiquido)) * 100;
 
     const saldoProjetado = saldoAtual + aReceberFiado - parcelasFornecedoresMes;
     const inadimplenciaPercentual = aReceberFiado > 0 ? Math.round((inadimplenciaTotal / aReceberFiado) * 10000) / 100 : 0;
