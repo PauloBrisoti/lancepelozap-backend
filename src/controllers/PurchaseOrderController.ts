@@ -441,6 +441,209 @@ export class PurchaseOrderController {
     res.json(order);
   }, "atualizar pedido");
 
+  /**
+   * Edição de pedido já RECEBIDO, com reflexo em cascata (transação única):
+   *  - Estoque: aplica o delta por produto (+entrada/−saída) com movimento de ajuste;
+   *    delta positivo recompõe custo médio (como no receive), negativo reconstitui
+   *    o custo anterior (como no revert).
+   *  - Financeiro: parcelas PENDENTES são canceladas e regeneradas sobre o novo total,
+   *    preservando as PAGAS (dinheiro que já saiu é histórico). Se o novo total for
+   *    menor que o já pago, gera ESTORNO creditando a carteira do pedido.
+   */
+  editReceived = asyncHandler(async (req: Request, res: Response) => {
+    const storeId = getStoreId(req);
+    const userId = req.user?.id as string;
+
+    const existing = await prisma.purchaseOrder.findFirst({
+      where: { id: req.params.id as string, storeId },
+      include: { items: true, accountsPayable: true },
+    });
+    if (!existing) return res.status(404).json({ message: "Pedido não encontrado" });
+    if (existing.status !== "RECEBIDO") {
+      return res.status(400).json({ message: `Use a edição comum para pedidos ${existing.status}; este endpoint é exclusivo de pedidos RECEBIDO` });
+    }
+
+    const { items, dataPrevisao, observacoes, valorDesconto: rawDesconto } = req.body;
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ message: "Mínimo de 1 item no pedido" });
+    }
+
+    // Novos itens validados contra a loja
+    const newItems: { productId: string; quantidade: number; precoUnitario: number; valorTotal: number; observacao: string | null }[] = [];
+    let valorTotalBruto = 0;
+    for (const item of items) {
+      const product = await prisma.product.findFirst({ where: { id: item.productId, storeId } });
+      if (!product) return res.status(400).json({ message: `Produto ${item.productId} não encontrado` });
+      const qtd = Number(item.quantidade) || 1;
+      const preco = Number(item.precoUnitario) || 0;
+      const total = qtd * preco;
+      valorTotalBruto += total;
+      newItems.push({ productId: product.id, quantidade: qtd, precoUnitario: preco, valorTotal: total, observacao: item.observacao || null });
+    }
+
+    const desconto = rawDesconto !== undefined ? Number(rawDesconto) || 0 : Number(existing.valorDesconto || 0);
+    const freteValor = Number(existing.valorFrete || 0);
+    const novoTotalLiquido = valorTotalBruto - desconto + freteValor;
+
+    // Deltas de estoque (novo − antigo) por produto
+    const oldQty = new Map<string, number>();
+    for (const it of existing.items) oldQty.set(it.productId, (oldQty.get(it.productId) || 0) + Number(it.quantidade));
+    const newQty = new Map<string, number>();
+    for (const it of newItems) newQty.set(it.productId, (newQty.get(it.productId) || 0) + it.quantidade);
+
+    const order = await prisma.$transaction(async (tx) => {
+      // ─── 1. Estoque: aplica deltas com trilha de auditoria ───
+      const productIds = new Set([...oldQty.keys(), ...newQty.keys()]);
+      for (const productId of productIds) {
+        const delta = (newQty.get(productId) || 0) - (oldQty.get(productId) || 0);
+        if (delta === 0) continue;
+        const product = await tx.product.findUnique({ where: { id: productId } });
+        if (!product) throw new Error("Produto não encontrado: " + productId);
+        const saldoAnterior = Number(product.qtdEstoqueAtual);
+        const saldoPosterior = saldoAnterior + delta;
+
+        let novoCustoMedio = Number(product.precoCusto);
+        if (delta > 0) {
+          // Recompõe custo médio capitalizando a entrada (mesmo critério do receive)
+          const precoUnit = newItems.find(i => i.productId === productId)?.precoUnitario ?? novoCustoMedio;
+          const custoEntradaTotal = delta * precoUnit;
+          novoCustoMedio = saldoPosterior > 0
+            ? (saldoAnterior * Number(product.precoCusto) + custoEntradaTotal) / saldoPosterior
+            : precoUnit;
+        } else {
+          // Saída: reconstitui o custo que existia antes daquela quantidade (mesmo critério do revert)
+          const saldoAnteriorAoAjuste = saldoPosterior - delta; // = saldoAnterior
+          const itemOld = existing.items.find(i => i.productId === productId);
+          const custoEntradaTotal = Math.abs(delta) * Number(itemOld?.precoUnitario || product.precoCusto);
+          novoCustoMedio = saldoPosterior > 0
+            ? (Number(product.precoCusto) * saldoAnterior - custoEntradaTotal) / saldoPosterior
+            : Number(product.precoCusto);
+        }
+
+        await tx.product.update({
+          where: { id: productId },
+          data: { qtdEstoqueAtual: saldoPosterior, precoCusto: Math.max(0, novoCustoMedio) },
+        });
+        await tx.stockMovement.create({
+          data: {
+            storeId,
+            productId,
+            userId,
+            tipo: delta > 0 ? "ENTRADA" : "SAIDA",
+            quantidade: Math.abs(delta),
+            saldoAnterior,
+            saldoPosterior,
+            referenciaId: existing.id,
+            observacao: "Ajuste de edição do pedido #" + existing.orderNumber,
+          },
+        });
+      }
+
+      // ─── 2. Itens do pedido (quantidadeRecebida acompanha a nova realidade) ───
+      await tx.purchaseOrderItem.deleteMany({ where: { purchaseOrderId: existing.id } });
+      await tx.purchaseOrderItem.createMany({
+        data: newItems.map(i => ({
+          purchaseOrderId: existing.id,
+          productId: i.productId,
+          quantidade: i.quantidade,
+          quantidadeRecebida: i.quantidade,
+          precoUnitario: i.precoUnitario,
+          valorTotal: i.valorTotal,
+          observacao: i.observacao,
+        })),
+      });
+
+      // ─── 3. Financeiro: preserva PAGAS, regenera PENDENTES sobre o novo total ───
+      const paidAPs = existing.accountsPayable.filter(a => a.status === "PAGO");
+      const paidAmount = paidAPs.reduce((acc, a) => acc + Number(a.valor), 0);
+      await tx.accountPayable.deleteMany({
+        where: { purchaseOrderId: existing.id, status: "PENDENTE" },
+      });
+
+      const remaining = Math.round((novoTotalLiquido - paidAmount) * 100) / 100;
+      const parcelasRestantes = Math.max(
+        paidAPs.length > 0
+          ? Math.max(1, Number(existing.numeroParcelas) || 1) - paidAPs.length
+          : Math.max(1, Number(existing.numeroParcelas) || 1),
+        0
+      );
+
+      if (remaining < 0) {
+        // Novo total menor que o já pago: estorna a diferença na carteira do pedido
+        const wallet = existing.walletIdEntrada
+          ? await tx.wallet.findFirst({ where: { id: existing.walletIdEntrada, storeId } })
+          : await tx.wallet.findFirst({
+              where: { storeId, nome: { contains: "caixa", mode: "insensitive" } },
+              orderBy: { id: "asc" },
+            }) ?? await tx.wallet.findFirst({ where: { storeId }, orderBy: { id: "asc" } });
+        if (!wallet) throw new Error("Nenhuma carteira disponível para estornar a diferença");
+        await tx.wallet.update({
+          where: { id: wallet.id },
+          data: { saldoAtual: { increment: Math.abs(remaining) } },
+        });
+        await tx.financialTransaction.create({
+          data: {
+            storeId,
+            walletId: wallet.id,
+            tipo: "ENTRADA",
+            valor: Math.abs(remaining),
+            descricao: "Estorno diferença edição pedido #" + existing.orderNumber,
+            categoria: "ESTORNO",
+            status: "ATIVA",
+          },
+        });
+      } else if (remaining > 0 && parcelasRestantes > 0) {
+        const each = Math.round((remaining / parcelasRestantes) * 100) / 100;
+        const ultima = Math.round((remaining - each * (parcelasRestantes - 1)) * 100) / 100;
+        const pendentesExistentes = existing.accountsPayable
+          .filter(a => a.status !== "CANCELADO")
+          .map(a => new Date(a.dataVencimento).getTime());
+        const anchorBase = pendentesExistentes.length
+          ? new Date(Math.min(...pendentesExistentes))
+          : firstDueDate(new Date(existing.dataPedido));
+        const startIndex = (paidAPs.length || 0) + 1;
+        for (let k = 0; k < parcelasRestantes; k++) {
+          const due = addMonthsClamped(anchorBase, k);
+          await tx.accountPayable.create({
+            data: {
+              storeId,
+              descricao: `Parcela ${startIndex + k}/${(Number(existing.numeroParcelas) || parcelasRestantes)} do pedido #${existing.orderNumber} (pós-edição)`,
+              supplierId: existing.supplierId,
+              creditCardId: null,
+              purchaseOrderId: existing.id,
+              numeroParcela: startIndex + k,
+              totalParcelas: Math.max(Number(existing.numeroParcelas) || 1, startIndex + parcelasRestantes - 1),
+              dataVencimento: due,
+              valor: k === parcelasRestantes - 1 ? ultima : each,
+              status: "PENDENTE",
+            },
+          });
+        }
+      }
+
+      // ─── 4. Cabeçalho do pedido ───
+      return tx.purchaseOrder.update({
+        where: { id: existing.id },
+        data: {
+          valorTotalBruto,
+          valorDesconto: desconto,
+          valorTotalLiquido: novoTotalLiquido,
+          dataPrevisao: dataPrevisao !== undefined ? parseDate(dataPrevisao) : existing.dataPrevisao,
+          observacoes: observacoes !== undefined ? (observacoes || null) : existing.observacoes,
+        },
+        include: {
+          items: { include: { product: { select: { id: true, nome: true, codigoVisual: true } } } },
+          user: { select: { id: true, nome: true } },
+          supplier: { select: { id: true, nome: true, cnpjCpf: true } },
+          customer: { select: { id: true, nomeCompleto: true, telefoneWhatsapp: true } },
+          accountsPayable: { orderBy: { numeroParcela: "asc" } },
+        },
+      });
+    });
+
+    res.json(order);
+  }, "editar pedido recebido");
+
   updateStatus = asyncHandler(async (req: Request, res: Response) => {
     const storeId = getStoreId(req);
 
