@@ -174,6 +174,36 @@ export class FinanceController {
 
       const saldoProjetado = saldoTotal + somaRecebimentosMes - somaPagamentosMes;
 
+      // Saldo AO FIM DO PERÍODO selecionado (diferente de saldoAtual, que é "hoje").
+      // Técnica: ancora no saldoAtual (confiável no presente) e desfaz o líquido dos
+      // lançamentos posteriores ao fim do período — imune a saldos iniciais semeados
+      // manualmente sem transação correspondente.
+      const aggAposPeriodo = await prisma.financialTransaction.groupBy({
+        by: ['walletId', 'tipo'],
+        where: {
+          storeId,
+          status: 'ATIVA',
+          tipo: { in: ['ENTRADA', 'SAIDA'] },
+          dataTransacao: { gt: endOfPeriod }
+        },
+        _sum: { valor: true }
+      });
+      const netAposPorCarteira = new Map<string, number>();
+      let netAposTotal = 0;
+      for (const g of aggAposPeriodo) {
+        if (!g.walletId) continue;
+        const entrada = g.tipo === 'ENTRADA' ? Number(g._sum.valor || 0) : 0;
+        const saida = g.tipo === 'SAIDA' ? Number(g._sum.valor || 0) : 0;
+        const net = entrada - saida;
+        netAposPorCarteira.set(g.walletId, (netAposPorCarteira.get(g.walletId) || 0) + net);
+        netAposTotal += net;
+      }
+      const saldoFimPeriodo = saldoTotal - netAposTotal;
+      const walletsComSaldoHistorico = wallets.map(w => ({
+        ...w,
+        saldoFimPeriodo: Number(w.saldoAtual) - (netAposPorCarteira.get(w.id) || 0)
+      }));
+
       const monthTransactions = await prisma.financialTransaction.findMany({
         where: {
           storeId,
@@ -205,13 +235,14 @@ export class FinanceController {
 
       return res.json({
         saldoTotal,
+        saldoFimPeriodo,
         saldoProjetado,
         totalAtrasado,
         totalAVencer,
         receitasMes,
         despesasMes,
         comissaoPagasMes: Number(comissaoPagasMes._sum.totalValor || 0),
-        wallets,
+        wallets: walletsComSaldoHistorico,
         devedoresAtrasados
       });
     
