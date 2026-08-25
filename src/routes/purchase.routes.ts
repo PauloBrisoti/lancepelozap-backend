@@ -31,6 +31,10 @@ purchaseRouter.put("/:id",
   requireStorePermission("gerenciar_compras"),
   controller.update
 );
+purchaseRouter.put("/:id/received",
+  requireStorePermission("gerenciar_compras"),
+  controller.editReceived
+);
 purchaseRouter.patch("/:id/status",
   requireStorePermission("gerenciar_compras"),
   controller.updateStatus
