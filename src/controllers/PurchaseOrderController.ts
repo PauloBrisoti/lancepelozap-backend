@@ -14,6 +14,16 @@ function clampDay(date: Date, day: number): Date {
   return d;
 }
 
+// Soma meses preservando o dia-base, clampando ao último dia do mês alvo.
+// setMonth cru pula o mês quando o dia não existe (31/jan +1m → 3/mar); aqui
+// 31/jan +1m → 28/fev (ou 29), mantendo a âncora mensal correta.
+function addMonthsClamped(base: Date, months: number): Date {
+  const target = new Date(base.getFullYear(), base.getMonth() + months, 1);
+  const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+  target.setDate(Math.min(base.getDate(), lastDay));
+  return target;
+}
+
 // Primeiro vencimento: usa o informado ou deriva da data da compra + dia do cartão
 function firstDueDate(compraDate: Date, primeiroVencimento?: string, cardDay?: number): Date {
   let d: Date;
@@ -141,13 +151,6 @@ export class PurchaseOrderController {
       }
     }
 
-    const lastOrder = await prisma.purchaseOrder.findFirst({
-      where: { storeId },
-      orderBy: { orderNumber: "desc" },
-      select: { orderNumber: true },
-    });
-    const nextNumber = (lastOrder?.orderNumber ?? 0) + 1;
-
     let valorTotalBruto = 0;
     const orderItems: any[] = [];
 
@@ -191,6 +194,15 @@ export class PurchaseOrderController {
     if (forma === "A_VISTA" && parcelasTotal > 1) {
       return res.status(400).json({ message: "À vista não admite parcelas" });
     }
+    if (valorPagoAgora > 0 && !walletIdEntrada) {
+      // Antes isto passava em silêncio: o pedido era criado sem AP/FT e o
+      // dinheiro pago ao fornecedor nunca entrava no Contas a Pagar.
+      return res.status(400).json({ message: "Informe a carteira para registrar o valor pago (entrada/à vista)" });
+    }
+    const remainingPrecheck = valorTotalLiquido - valorPagoAgora;
+    if (remainingPrecheck > 0 && parcelasTotal - (entradaValor > 0 ? 2 : 1) + 1 <= 0) {
+      return res.status(400).json({ message: "Valor de entrada cobre o total do pedido; ajuste entrada ou parcelas" });
+    }
     if (forma !== "A_VISTA" && !primeiroVencimento && forma === "PARCELADO_FORNECEDOR" && parcelasTotal > 1) {
       return res.status(400).json({ message: "Informe o primeiro vencimento" });
     }
@@ -200,7 +212,29 @@ export class PurchaseOrderController {
       return res.status(400).json({ message: "Primeiro vencimento não pode ser anterior à data da compra" });
     }
 
-    const order = await prisma.purchaseOrder.create({
+    // Pré-valida carteira FORA da transação para manter o status 400 original
+    if (valorPagoAgora > 0 && walletIdEntrada) {
+      const wallet = await prisma.wallet.findFirst({
+        where: { id: walletIdEntrada, storeId },
+      });
+      if (!wallet) {
+        return res.status(400).json({ message: "Carteira nao encontrada" });
+      }
+      if (Number(wallet.saldoAtual) < valorPagoAgora) {
+        return res.status(400).json({ message: "Saldo insuficiente na carteira" });
+      }
+    }
+
+    // Atomicidade: pedido + parcelas + transação financeira nascem juntos ou não nascem
+    const order = await prisma.$transaction(async (tx) => {
+      const lastOrder = await tx.purchaseOrder.findFirst({
+        where: { storeId },
+        orderBy: { orderNumber: "desc" },
+        select: { orderNumber: true },
+      });
+      const nextNumber = (lastOrder?.orderNumber ?? 0) + 1;
+
+      const created = await tx.purchaseOrder.create({
       data: {
         storeId,
         userId,
@@ -234,22 +268,12 @@ export class PurchaseOrderController {
     });
 
     if (valorPagoAgora > 0 && walletIdEntrada) {
-      const wallet = await prisma.wallet.findFirst({
-        where: { id: walletIdEntrada, storeId },
-      });
-      if (!wallet) {
-        return res.status(400).json({ message: "Carteira nao encontrada" });
-      }
-      if (Number(wallet.saldoAtual) < valorPagoAgora) {
-        return res.status(400).json({ message: "Saldo insuficiente na carteira" });
-      }
-
-      await prisma.wallet.update({
+      await tx.wallet.update({
         where: { id: walletIdEntrada },
         data: { saldoAtual: { decrement: valorPagoAgora } },
       });
 
-      await prisma.financialTransaction.create({
+      await tx.financialTransaction.create({
         data: {
           storeId,
           walletId: walletIdEntrada,
@@ -265,7 +289,7 @@ export class PurchaseOrderController {
         },
       });
 
-      await prisma.accountPayable.create({
+      await tx.accountPayable.create({
         data: {
           storeId,
           descricao: pagamentoAVista
@@ -273,7 +297,7 @@ export class PurchaseOrderController {
             : "Entrada do pedido #" + nextNumber,
           supplierId: supplierId || null,
           creditCardId: creditCardId || null,
-          purchaseOrderId: order.id,
+          purchaseOrderId: created.id,
           numeroParcela: 1,
           totalParcelas: parcelasTotal,
           dataVencimento: compraDate,
@@ -283,23 +307,23 @@ export class PurchaseOrderController {
       });
     }
 
-    const remaining = Number(order.valorTotalLiquido) - valorPagoAgora;
+    const remaining = Number(created.valorTotalLiquido) - valorPagoAgora;
     if (remaining > 0) {
       const startIndex = entradaValor > 0 ? 2 : 1;
       const numParcelas = parcelasTotal - startIndex + 1;
       const installmentValue = Math.round((remaining / numParcelas) * 100) / 100;
       const ultimaParcelaValue = Math.round((remaining - installmentValue * (numParcelas - 1)) * 100) / 100;
       for (let i = startIndex; i <= parcelasTotal; i++) {
-        const dueDate = new Date(firstDue);
-        dueDate.setMonth(dueDate.getMonth() + (i - startIndex));
-        const finalDue = forma === "CARTAO_CREDITO" ? clampDay(dueDate, card.diaVencimento) : dueDate;
-        await prisma.accountPayable.create({
+        // Incremento mensal clampado: dia 29-31 não pula mais o mês
+        const rolledDue = addMonthsClamped(firstDue, i - startIndex);
+        const finalDue = forma === "CARTAO_CREDITO" ? clampDay(rolledDue, card.diaVencimento) : rolledDue;
+        await tx.accountPayable.create({
           data: {
             storeId,
             descricao: (parcelasTotal > 1 ? "Parcela " + i + "/" + parcelasTotal + " do pedido #" + nextNumber : "Pagamento do pedido #" + nextNumber),
             supplierId: supplierId || null,
             creditCardId: creditCardId || null,
-            purchaseOrderId: order.id,
+            purchaseOrderId: created.id,
             numeroParcela: i,
             totalParcelas: parcelasTotal,
             dataVencimento: finalDue,
@@ -312,7 +336,7 @@ export class PurchaseOrderController {
 
     if (customerId) {
       for (const item of items) {
-        await prisma.product.update({
+        await tx.product.update({
           where: { id: item.productId },
           data: {
             status: "ENCOMENDA",
@@ -322,6 +346,9 @@ export class PurchaseOrderController {
         });
       }
     }
+
+      return created;
+    });
 
     res.status(201).json(order);
   }, "criar pedido");
