@@ -137,6 +137,9 @@ router.get('/pix-config', requireInternalPermission('FINANCEIRO', 'VIEW'), super
 router.get('/stores/:storeId/features', requireInternalPermission('CLIENTES', 'VIEW'), requireScopedStoreParam, superAdminController.updateStoreFeatures.bind(superAdminController));
 router.put('/stores/:storeId/features', requireInternalPermission('CLIENTES', 'FULL'), requireScopedStoreParam, superAdminController.updateStoreFeatures.bind(superAdminController));
 
+// Atualizar dados básicos da loja (nicho, nome, etc.)
+router.patch('/stores/:storeId', requireInternalPermission('CLIENTES', 'FULL'), requireScopedStoreParam, superAdminController.updateStore.bind(superAdminController));
+
 // Módulo Planos
 router.get('/plans', requireInternalPermission('PLANOS_E_MODULOS', 'VIEW'), planController.list.bind(planController));
 router.post('/plans', requireInternalPermission('PLANOS_E_MODULOS', 'FULL'), planController.create.bind(planController));
