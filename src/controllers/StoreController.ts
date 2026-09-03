@@ -35,7 +35,7 @@ export class StoreController {
           stores: []
         });
       }
-      const { control, whatsappApiKey, ...storeData } = s;
+      const { control, ...storeData } = s;
       controlMap.get(s.controlId).stores.push(storeData);
     }
 
@@ -206,8 +206,7 @@ export class StoreController {
       }
     });
 
-    // SEGURANÇA: nunca ecoar credenciais de integração (whatsappApiKey)
-    const { whatsappApiKey, ...safeUpdated } = updated as any;
+    const { ...safeUpdated } = updated as any;
     return ok(res, safeUpdated);
   }, "atualizar loja");
 

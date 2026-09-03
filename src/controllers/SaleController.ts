@@ -6,7 +6,6 @@ import { randomUUID } from "crypto";
 import jwt from "jsonwebtoken";
 import { prisma } from "../lib/prisma";
 import { StockMovementService } from "../services/StockMovementService";
-import { WhatsAppService } from "../services/WhatsAppService";
 import { FeeCalculationService } from "../services/FeeCalculationService";
 import { comparePassword } from "../utils/password";
 import { buildDateRange, parseDate } from "../lib/dateUtils";
@@ -240,6 +239,9 @@ export class SaleController {
       // Resolve sale date: use client-provided or current timestamp
       const saleDate = parseDate(dataVenda) ?? new Date();
 
+      // Extract the original day from the raw date string for installment calculation
+      const originalDay = dataVenda ? parseInt(dataVenda.split('T')[0].split('-')[2], 10) : saleDate.getUTCDate();
+
       // 1. Transaction Start
       const result = await prisma.$transaction(async (tx) => {
         let valorTotalBruto = 0;
@@ -377,7 +379,10 @@ export class SaleController {
 
             for (let i = 1; i <= numParcelas; i++) {
               const dataVencimento = new Date(saleDate);
-              dataVencimento.setDate(dataVencimento.getDate() + (i * 30));
+              dataVencimento.setUTCMonth(dataVencimento.getUTCMonth() + i);
+              if (dataVencimento.getUTCDate() !== originalDay) {
+                dataVencimento.setUTCDate(0);
+              }
 
               const valorParcela = i === 1 ? primeiraParcela : parcelaBase;
 
@@ -487,53 +492,6 @@ export class SaleController {
 
       res.status(201).json(result);
 
-      // Non-blocking WhatsApp notification
-      if (customerId) {
-        (async () => {
-          try {
-            const setting = await prisma.systemSetting.findUnique({ where: { chave: 'GATEWAYS' } });
-            if (!setting) return;
-            const gateways = setting.valor as any;
-            if (!gateways.whatsappApiUrl || !gateways.whatsappApiToken) return;
-
-            const customer = await prisma.customer.findFirst({
-              where: { id: customerId, storeId },
-              select: { nomeCompleto: true, telefoneWhatsapp: true },
-            });
-            if (!customer?.telefoneWhatsapp) return;
-
-            const store = await prisma.store.findUnique({
-              where: { id: storeId },
-              select: { nomeFantasia: true, chavePix: true },
-            });
-
-            const svc = new WhatsAppService(gateways.whatsappApiUrl, gateways.whatsappApiToken, gateways.whatsappInstance || 'default');
-            const itemList = itens.map((i: any) => `  • ${i.quantidade}x ${i.nome || 'Produto'} — R$ ${Number(i.precoUnitarioVendido * i.quantidade).toFixed(2)}`).join('\n');
-
-            const methodLabels: Record<string, string> = {
-              PIX: 'Pix', DINHEIRO: 'Dinheiro', CARTAO_CREDITO: 'Cartão de Crédito',
-              CARTAO_DEBITO: 'Cartão de Débito', CREDIARIO: 'Crediário',
-            };
-
-            const message = [
-              `🧾 *${store?.nomeFantasia || 'Comprovante de Venda'}*`,
-              '',
-              `Cliente: ${customer.nomeCompleto}`,
-              '',
-              '*Itens:*',
-              itemList,
-              '',
-              `💰 *Total: R$ ${Number(result.valorTotalLiquido).toFixed(2)}*`,
-              `💳 Pagamento: ${methodLabels[formaPagamento] || formaPagamento}`,
-              store?.chavePix ? `📱 Pix: ${store.chavePix}` : '',
-              '',
-              'Obrigado pela preferência! 🤝',
-            ].filter(Boolean).join('\n');
-
-            await svc.sendText(svc.formatPhone(customer.telefoneWhatsapp), message);
-          } catch { /* silent */ }
-        })();
-      }
     } catch (error: unknown) {
       logger.error("Erro ao criar venda:", error);
       res.status(400).json({ message: getErrorMessage(error) || "Erro ao processar a venda" });
@@ -591,6 +549,10 @@ export class SaleController {
         const novoPagamento = formaPagamento ?? sale.formaPagamento;
         const novasParcelas = numeroParcelas !== undefined ? Number(numeroParcelas) : Number(sale.numeroParcelas);
         const novoDesconto = valorDesconto !== undefined ? Number(valorDesconto) : Number(sale.valorDesconto);
+        const saleDateEdit = parseDate(dataVenda) ?? sale.dataVenda;
+        const originalDayEdit = dataVenda
+          ? parseInt(dataVenda.split('T')[0].split('-')[2], 10)
+          : (saleDateEdit instanceof Date ? saleDateEdit.getUTCDate() : new Date(saleDateEdit).getUTCDate());
 
         const feeResult = await FeeCalculationService.execute({
           storeId,
@@ -687,8 +649,11 @@ export class SaleController {
               const parcelaBase = Math.round((valorRestante / parcelasFinal) * 100) / 100;
               const primeiraParcela = valorRestante - (parcelaBase * (parcelasFinal - 1));
               for (let i = 1; i <= parcelasFinal; i++) {
-                const dataVencimento = new Date();
-                dataVencimento.setDate(dataVencimento.getDate() + (i * 30));
+                const dataVencimento = new Date(saleDateEdit);
+                dataVencimento.setUTCMonth(dataVencimento.getUTCMonth() + i);
+                if (dataVencimento.getUTCDate() !== originalDayEdit) {
+                  dataVencimento.setUTCDate(0);
+                }
                 const valorParcela = i === 1 ? primeiraParcela : parcelaBase;
                 await tx.accountReceivable.create({
                   data: {

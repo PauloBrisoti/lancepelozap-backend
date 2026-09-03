@@ -57,6 +57,7 @@ model Client {
 
   controls          Control[]
   subscriptions     Subscription[]
+  paymentReceipts   PaymentReceipt[]
   clientUsers       ClientUser[]
   excecoesBloqueio  ExcecaoBloqueio[]
   saasAuditLogs     SaasAuditLog[]
@@ -115,8 +116,40 @@ model Subscription {
 
   cobrancaNotificacoes CobrancaNotificacao[]
   webhookEvents        WebhookEvent[]
+  paymentReceipts      PaymentReceipt[]
 
   @@map("subscriptions")
+}
+
+// Comprovante de pagamento Pix manual (Copia e Cola / QR Code estático).
+// O status NUNCA é alterado por dados vindos do front-end: o cliente só cria
+// registros em AGUARDANDO_VALIDACAO e a aprovação/rejeição é feita
+// exclusivamente pelo painel administrativo (role admin + escopo verificado).
+model PaymentReceipt {
+  id             String    @id @default(cuid())
+  clientId       String    @map("client_id")
+  subscriptionId String    @map("subscription_id")
+  // Status: 'AGUARDANDO_VALIDACAO' | 'APROVADO' | 'REJEITADO'
+  status         String    @default("AGUARDANDO_VALIDACAO")
+  // End-to-End ID do Pix informado pelo cliente
+  transactionId  String?   @map("transaction_id")
+  // Valor esperado (derivado do plano no servidor — nunca do body)
+  valorDeclarado Decimal   @map("valor_declarado") @db.Decimal(10, 2)
+  arquivoPath    String?   @map("arquivo_path")
+  arquivoOriginal String?  @map("arquivo_original")
+  motivoRejeicao String?   @map("motivo_rejeicao") @db.Text
+  aprovadoPor    String?   @map("aprovado_por")
+  aprovadoEm     DateTime? @map("aprovado_em")
+  rejeitadoPor   String?   @map("rejeitado_por")
+  rejeitadoEm    DateTime? @map("rejeitado_em")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  client       Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([clientId, createdAt])
+  @@index([status, createdAt])
+  @@map("payment_receipts")
 }
 
 // Eventos de webhook já processados (idempotência: mesmo evento entregue
@@ -242,13 +275,7 @@ model Store {
   dashboardCards            String?  @map("dashboard_cards") @db.Text
   pixQrCodeUrl             String?  @map("pix_qrcode_url")
   aliquotaImposto          Decimal? @default(0) @map("aliquota_imposto") @db.Decimal(5, 2)
-  whatsappApiUrl           String?  @map("whatsapp_api_url")
-  whatsappApiKey           String?  @map("whatsapp_api_key")
-  whatsappEnabled          Boolean  @default(false) @map("whatsapp_enabled")
-  whatsappSendConfirmation Boolean  @default(false) @map("whatsapp_send_confirmation")
-  whatsappSendReminder     Boolean  @default(false) @map("whatsapp_send_reminder")
-  whatsappSendBirthday     Boolean  @default(false) @map("whatsapp_send_birthday")
-  whatsappSendMarketing    Boolean  @default(false) @map("whatsapp_send_marketing")
+
   cartaoImediato           Boolean  @default(true) @map("cartao_imediato")
   diaInicioMes             Int      @default(1) @map("dia_inicio_mes")
   createdAt                DateTime @default(now()) @map("created_at")
@@ -281,8 +308,7 @@ model Store {
   stockTransfersOrig    StockTransfer[]        @relation("originStore")
   stockTransfersDest    StockTransfer[]        @relation("destinationStore")
   inventoryCounts       InventoryCount[]
-  messageLogs           MessageLog[]
-  whatsAppTemplates     WhatsAppTemplate[]
+
   serviceTypes          ServiceType[]
   serviceOrders         ServiceOrder[]
   professionals         Professional[]
@@ -423,7 +449,7 @@ model Customer {
   financialTransactions FinancialTransaction[]
   quotes                Quote[]
   productReturns        ProductReturn[]
-  messageLogs           MessageLog[]
+
   serviceOrders         ServiceOrder[]
   appointments          Appointment[]
   purchaseOrders        PurchaseOrder[]
@@ -1088,38 +1114,6 @@ model FinancialCategory {
   modulo    String? @map("modulo")
 
   @@map("financial_categories")
-}
-
-model WhatsAppTemplate {
-  id        String   @id @default(cuid())
-  storeId   String   @map("store_id")
-  nome      String
-  categoria String   @default("MARKETING") // COBRANCA, CONFIRMACAO, MARKETING, PORTAL, ANIVERSARIO
-  conteudo  String   @db.Text
-  ativo     Boolean  @default(true)
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
-
-  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
-
-  @@map("whatsapp_templates")
-}
-
-model MessageLog {
-  id         String   @id @default(cuid())
-  storeId    String   @map("store_id")
-  customerId String   @map("customer_id")
-  tipo       String // COBRANCA, CONFIRMACAO, MARKETING, PORTAL, ANIVERSARIO, AVULSO
-  conteudo   String   @db.Text
-  status     String   @default("ENVIADO") // ENVIADO, ERRO, PENDENTE
-  erro       String?  @db.Text
-  metadata   Json? // { saleId, receivableId, templateId, etc }
-  sentAt     DateTime @default(now()) @map("sent_at")
-
-  store    Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
-  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
-
-  @@map("message_logs")
 }
 
 model ServiceType {

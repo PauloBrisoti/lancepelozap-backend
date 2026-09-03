@@ -146,10 +146,10 @@ export class DashboardV2Controller {
 
     const [recebiveisMes, parcelasFornecedoresAgg, despesasFixasAgg, pagamentosEstoqueAgg] = await Promise.all([
       prisma.accountReceivable.findMany({
-        where: { storeId, status: { in: ["PENDENTE", "PAGO_PARCIAL"] } },
+        where: { storeId, status: { in: ["PENDENTE", "PAGO_PARCIAL"] }, dataVencimento: { lte: endDate } },
         select: { valorParcela: true, saleId: true, payments: { where: { tipo: "ENTRADA", status: "ATIVA" }, select: { valor: true } } }
       }),
-      prisma.accountPayable.aggregate({ where: { storeId, status: "PENDENTE" }, _sum: { valor: true } }),
+      prisma.accountPayable.aggregate({ where: { storeId, status: "PENDENTE", dataVencimento: { lte: endDate } }, _sum: { valor: true } }),
       prisma.financialTransaction.aggregate({ where: { storeId, tipo: "SAIDA", status: "ATIVA", dataTransacao: { gte: startDate, lte: endDate }, categoria: { in: ["ALUGUEL", "SALARIO", "PRO_LABORE", "AGUA", "LUZ", "INTERNET", "TELEFONE", "ASSINATURA", "SEGURO"] } }, _sum: { valor: true } }),
       prisma.financialTransaction.aggregate({ where: { storeId, tipo: "SAIDA", status: "ATIVA", dataTransacao: { gte: startDate, lte: endDate }, categoria: { in: ["COMPRA_ESTOQUE", "PAGAMENTO_FORNECEDOR"] } }, _sum: { valor: true } })
     ]);
@@ -270,15 +270,53 @@ export class DashboardV2Controller {
       prisma.wallet.findMany({ where: { storeId } })
     ]);
     const saldoAcumulado = Number(aggEntrada._sum.valor || 0) - Number(aggSaida._sum.valor || 0);
-    const saldoCarteirasWallet = wallets.length > 0
+    const saldoCarteirasHoje = wallets.length > 0
       ? wallets.reduce((acc, w) => acc + Number(w.saldoAtual), 0)
       : saldoAcumulado;
 
-    const products = await prisma.product.findMany({
-      where: { storeId, status: "ATIVO" },
-      select: { precoCusto: true, qtdEstoqueAtual: true }
-    });
-    const dinheiroImobilizado = products.reduce((acc, p) => acc + (Number(p.precoCusto) * Number(p.qtdEstoqueAtual)), 0);
+    const hojeFim = new Date();
+    hojeFim.setHours(23, 59, 59, 999);
+    const isMesAtual = lastDay >= hojeFim;
+
+    // Saldo da carteira no fim do período filtrado (desfaz o líquido dos lançamentos posteriores)
+    let saldoCarteirasPeriodo = saldoCarteirasHoje;
+    if (!isMesAtual) {
+      const [aggEntradaApos, aggSaidaApos] = await Promise.all([
+        prisma.financialTransaction.aggregate({
+          where: { storeId, tipo: "ENTRADA", status: "ATIVA", dataTransacao: { gt: lastDay } },
+          _sum: { valor: true }
+        }),
+        prisma.financialTransaction.aggregate({
+          where: { storeId, tipo: "SAIDA", status: "ATIVA", dataTransacao: { gt: lastDay } },
+          _sum: { valor: true }
+        })
+      ]);
+      const liquidoApos = Number(aggEntradaApos._sum.valor || 0) - Number(aggSaidaApos._sum.valor || 0);
+      saldoCarteirasPeriodo = saldoCarteirasHoje - liquidoApos;
+    }
+
+    let estoqueSnapshot: Array<{ estoque: number; custo: number }>;
+    if (isMesAtual) {
+      estoqueSnapshot = await prisma.$queryRaw<Array<{ estoque: number; custo: number }>>`
+        SELECT p."qtd_estoque_atual" AS estoque, p."preco_custo" AS custo
+        FROM "products" p
+        WHERE p."store_id" = ${storeId} AND p."status" = 'ATIVO' AND p."qtd_estoque_atual" > 0
+      `;
+    } else {
+      estoqueSnapshot = await prisma.$queryRaw<Array<{ estoque: number; custo: number }>>`
+        WITH ultimo_movimento AS (
+          SELECT sm."product_id", sm."saldo_posterior",
+                 ROW_NUMBER() OVER (PARTITION BY sm."product_id" ORDER BY sm."created_at" DESC) AS rn
+          FROM "stock_movements" sm
+          WHERE sm."store_id" = ${storeId} AND sm."created_at" <= ${lastDay}
+        )
+        SELECT um."saldo_posterior" AS estoque, p."preco_custo" AS custo
+        FROM ultimo_movimento um
+        JOIN "products" p ON p."id" = um."product_id" AND p."store_id" = ${storeId} AND p."status" = 'ATIVO'
+        WHERE um.rn = 1 AND um."saldo_posterior" > 0
+      `;
+    }
+    const dinheiroImobilizado = estoqueSnapshot.reduce((acc, p) => acc + (Number(p.estoque) * Number(p.custo)), 0);
 
     const [salesAgg, petOrdersAgg, receitasCaixa, saidasFinanceirasAgg, despesasAgg, salesPeriodo] = await Promise.all([
       prisma.sale.aggregate({ where: { storeId, status: { not: "CANCELADA" }, dataVenda: { gte: firstDay, lte: lastDay } }, _sum: { cmvTotal: true, valorTotalLiquido: true, valorTotalBruto: true, valorDesconto: true, valorTaxasGateway: true } }),
@@ -345,8 +383,8 @@ export class DashboardV2Controller {
     impostosEstimados = Math.round(impostosEstimados * 100) / 100;
 
     // Saldo Atual: fonte de verdade é a carteira (identidade Caixa do contrato); Saldo Anterior derivado da cascata
-    const saldoAnterior = saldoCarteirasWallet - (dinheiroCaixaRealizado - saidasTotais);
-    const saldoAtual = saldoCarteirasWallet;
+    const saldoAnterior = saldoCarteirasPeriodo - (dinheiroCaixaRealizado - saidasTotais);
+    const saldoAtual = saldoCarteirasPeriodo;
 
     // Capital Livre: saldo - contas a pagar do mês (conservador)
     const hoje = new Date();
@@ -355,10 +393,10 @@ export class DashboardV2Controller {
 
     const [recebiveisMes, parcelasFornecedoresAgg, despesasFixasAgg, pagamentosEstoqueAgg] = await Promise.all([
       prisma.accountReceivable.findMany({
-        where: { storeId, status: { not: "CANCELADA" } },
+        where: { storeId, status: { not: "CANCELADA" }, dataVencimento: { lte: lastDay } },
         select: { dataVencimento: true, valorParcela: true, saleId: true, payments: { where: { tipo: "ENTRADA", status: "ATIVA" }, select: { valor: true } } }
       }),
-      prisma.accountPayable.aggregate({ where: { storeId, status: "PENDENTE" }, _sum: { valor: true } }),
+      prisma.accountPayable.aggregate({ where: { storeId, status: "PENDENTE", dataVencimento: { lte: lastDay } }, _sum: { valor: true } }),
       prisma.financialTransaction.aggregate({ where: { storeId, tipo: "SAIDA", status: "ATIVA", dataTransacao: { gte: hoje, lte: lastDay }, categoria: { in: ["ALUGUEL", "SALARIO", "PRO_LABORE", "AGUA", "LUZ", "INTERNET", "TELEFONE", "ASSINATURA", "SEGURO"] } }, _sum: { valor: true } }),
       prisma.financialTransaction.aggregate({ where: { storeId, tipo: "SAIDA", status: "ATIVA", dataTransacao: { gte: hoje, lte: lastDay }, categoria: { in: ["COMPRA_ESTOQUE", "PAGAMENTO_FORNECEDOR"] } }, _sum: { valor: true } })
     ]);

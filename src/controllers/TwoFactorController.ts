@@ -188,16 +188,12 @@ export class TwoFactorController {
        ativo: user.ativo,
        clientId: clientAccess?.clientId || null,
        dadosCompletos: client?.dadosCompletos ?? false,
-       storeAccess: userWithRelations?.storeAccess.map(a => {
-         // SEGURANÇA: nunca expor credenciais de integração (WhatsApp)
-         const { whatsappApiKey, ...safeStore } = a.store as any;
-         return { ...a, store: safeStore };
-       }),
-       availableStores: userWithRelations?.storeAccess.map(a => {
-         // SEGURANÇA: nunca expor credenciais de integração (WhatsApp)
-         const { whatsappApiKey, ...safeStore } = a.store as any;
-         return safeStore;
-       })
+        storeAccess: userWithRelations?.storeAccess.map(a => {
+          return { ...a, store: a.store };
+        }),
+        availableStores: userWithRelations?.storeAccess.map(a => {
+          return a.store;
+        })
     };
 
     return res.json({ message: "Login realizado com sucesso", user: publicData });

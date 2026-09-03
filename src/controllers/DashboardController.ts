@@ -271,7 +271,7 @@ export class DashboardController {
     ] = await Promise.all([
       prisma.store.count(),
       prisma.client.count(),
-      prisma.user.count({ where: { role: 'USER' } }),
+      prisma.user.count({ where: { role: { not: 'SUPER_ADMIN' } } }),
       prisma.client.count({ where: { createdAt: { gte: inicioMes, lte: fimMes } } }),
       prisma.client.count({ where: { createdAt: { gte: mesPassado, lte: fimMesPassado } } }),
     ]);

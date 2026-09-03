@@ -8,6 +8,10 @@ import { hashPassword } from '../utils/password';
 // nem papéis que não existem no RBAC de loja — só papéis de loja válidos.
 const STORE_ROLES_ALLOWED = new Set(['CAIXA', 'VENDEDOR', 'GERENTE', 'MANAGER', 'ADMIN', 'ADMIN_LOJA']);
 
+// Papéis com poder administrativo na loja (editar configs, zerar faturamento).
+// Inclui OWNER (cargo legado dos donos) — dono é a autoridade máxima da loja.
+const MANAGER_ROLES = new Set(['ADMIN_LOJA', 'GERENTE', 'OWNER']);
+
 export class SettingsController {
   
   // ==========================================
@@ -22,9 +26,7 @@ export class SettingsController {
         where: { id: storeId }
       });
 
-      // SEGURANÇA: nunca expor credenciais de integração (WhatsApp)
-      const { whatsappApiKey, ...safeTenant } = tenant as any;
-      return res.json(safeTenant);
+      return res.json(tenant);
     
   }, "obter tenant configurações");
 
@@ -37,7 +39,7 @@ export class SettingsController {
         const access = await prisma.storeUserAccess.findUnique({
           where: { storeId_userId: { storeId, userId: req.user!.id } }
         });
-        if (!access || (access.role !== 'ADMIN_LOJA' && access.role !== 'GERENTE')) {
+        if (!access || !MANAGER_ROLES.has(access.role)) {
           return res.status(403).json({ error: 'Acesso negado' });
         }
       }
@@ -79,7 +81,7 @@ export class SettingsController {
         const access = await prisma.storeUserAccess.findUnique({
           where: { storeId_userId: { storeId, userId } }
         });
-        if (!access || (access.role !== 'ADMIN_LOJA' && access.role !== 'GERENTE')) {
+        if (!access || !MANAGER_ROLES.has(access.role)) {
           return res.status(403).json({ error: 'Acesso negado. Apenas o administrador da loja pode zerar o faturamento.' });
         }
       }
