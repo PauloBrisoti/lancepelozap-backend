@@ -71,6 +71,7 @@ router.put('/transactions/:id', requireStorePermission('gerenciar_financeiro'), 
 router.get('/receivables', requirePlanFeature('crediario'), FinanceController.getReceivables);
 router.post('/receivables/:id/pay', requireStorePermission('gerenciar_financeiro'), requirePlanFeature('crediario'), validate(payReceivableSchema), FinanceController.payReceivable);
 router.post('/receivables/:id/renegotiate', requireStorePermission('gerenciar_financeiro'), requirePlanFeature('crediario'), validate(renegotiateSchema), FinanceController.renegotiateReceivable);
+router.patch('/receivables/:id/date', requireStorePermission('gerenciar_financeiro'), requirePlanFeature('crediario'), FinanceController.updateReceivableDate);
 
 router.get('/payables', requireStorePermission('gerenciar_financeiro'), requirePlanFeature('financeiro'), FinanceController.getPayables);
 router.post('/payables', requireStorePermission('gerenciar_financeiro'), requirePlanFeature('financeiro'), FinanceController.createPayable);

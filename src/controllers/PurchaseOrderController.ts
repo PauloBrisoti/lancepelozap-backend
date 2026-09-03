@@ -364,7 +364,7 @@ export class PurchaseOrderController {
       return res.status(400).json({ message: `Não é possível editar pedido com status ${existing.status}` });
     }
 
-    const { supplierId, customerId, items, dataPrevisao, observacoes, valorDesconto: rawDesconto, valorVenda } = req.body;
+    const { supplierId, customerId, items, dataPrevisao, observacoes, valorDesconto: rawDesconto, valorVenda, formaPagamento, numeroParcelas, walletIdEntrada, valorEntrada, dataPedido } = req.body;
 
     await prisma.purchaseOrderItem.deleteMany({ where: { purchaseOrderId: existing.id } });
 
@@ -404,11 +404,16 @@ export class PurchaseOrderController {
       data: {
         supplierId: supplierId !== undefined ? (supplierId || null) : existing.supplierId,
         customerId: customerId !== undefined ? (customerId || null) : existing.customerId,
+        dataPedido: dataPedido !== undefined ? (parseDate(dataPedido) ?? existing.dataPedido) : existing.dataPedido,
         dataPrevisao: dataPrevisao !== undefined ? parseDate(dataPrevisao) : existing.dataPrevisao,
         valorTotalBruto,
         valorDesconto: desconto,
         valorTotalLiquido,
         valorVenda: valorVenda !== undefined ? Number(valorVenda) : existing.valorVenda,
+        formaPagamento: formaPagamento || existing.formaPagamento,
+        numeroParcelas: numeroParcelas !== undefined ? Number(numeroParcelas) : existing.numeroParcelas,
+        walletIdEntrada: walletIdEntrada !== undefined ? (walletIdEntrada || null) : existing.walletIdEntrada,
+        valorEntrada: valorEntrada !== undefined ? Number(valorEntrada) || null : existing.valorEntrada,
         observacoes: observacoes !== undefined ? (observacoes || null) : existing.observacoes,
         items: { create: orderItems },
       },

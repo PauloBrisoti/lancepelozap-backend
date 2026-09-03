@@ -13,6 +13,8 @@ const getScopedClientId = async (req: Request): Promise<string | null> => {
   return dbUser?.internalRole?.clientId ?? null;
 };
 
+export { getScopedClientId };
+
 // Injeta req.scopedClientId para que listagens filtrem pelo escopo do papel
 export const scopedClientFilter = async (req: Request, _res: Response, next: NextFunction) => {
   try {
@@ -108,6 +110,28 @@ export const requireScopedSubscriptionParam = async (req: Request, res: Response
   } catch (error) {
     logger.error("[requireScopedSubscriptionParam] Error:", error);
       return res.status(500).json({ error: 'Erro interno de autorização.' });
+  }
+};
+
+// Valida que o comprovante (:id) pertence ao escopo do papel interno
+export const requireScopedReceiptParam = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const scope = await getScopedClientId(req);
+    if (!scope) return next();
+    const id = req.params.id as string | undefined;
+    if (!id) return next();
+    const receipt = await prisma.paymentReceipt.findUnique({
+      where: { id },
+      select: { clientId: true },
+    });
+    if (!receipt) return res.status(404).json({ error: 'Comprovante não encontrado' });
+    if (receipt.clientId !== scope) {
+      return res.status(403).json({ error: 'Acesso negado. Escopo restrito ao seu cliente.' });
+    }
+    next();
+  } catch (error) {
+    logger.error("[requireScopedReceiptParam] Error:", error);
+    res.status(500).json({ error: "Erro interno de autorização." });
   }
 };
 

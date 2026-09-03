@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { auditLog } from '../lib/audit';
 import { buildDateRange, getTimezone, parseDate } from '../lib/dateUtils';
-import { toZonedTime } from 'date-fns-tz';
+import { toZonedTime, fromZonedTime } from 'date-fns-tz';
 import { asyncHandler } from "../lib/asyncHandler";
 import { StockMovementService } from '../services/StockMovementService';
 import { CATEGORIA_VENDAS, normalizarCategoria } from '../lib/categorias';
@@ -1049,4 +1049,37 @@ export class FinanceController {
       return res.json({ message: 'Ação em massa executada com sucesso' });
     
   }, "bulk action");
+
+  static updateReceivableDate = asyncHandler(async (req: Request, res: Response) => {
+      const storeId = req.user?.storeId as string;
+      if (!storeId) return res.status(401).json({ message: 'Não autorizado' });
+
+      const id = req.params.id as string;
+      const { dataVencimento } = req.body;
+
+      if (!dataVencimento) {
+        return res.status(400).json({ message: 'Data de vencimento é obrigatória' });
+      }
+
+      const receivable = await prisma.accountReceivable.findUnique({ where: { id } });
+      if (!receivable || receivable.storeId !== storeId) {
+        return res.status(404).json({ message: 'Parcela não encontrada' });
+      }
+
+      if (receivable.status === 'PAGO') {
+        return res.status(400).json({ message: 'Não é possível alterar data de parcela já paga' });
+      }
+
+      const novaData = fromZonedTime(`${dataVencimento}T00:00:00.000`, getTimezone());
+      if (isNaN(novaData.getTime())) {
+        return res.status(400).json({ message: 'Data inválida' });
+      }
+
+      await prisma.accountReceivable.update({
+        where: { id },
+        data: { dataVencimento: novaData }
+      });
+
+      return res.json({ message: 'Data de vencimento atualizada com sucesso' });
+  }, "update receivable date");
 }

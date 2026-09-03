@@ -29,6 +29,12 @@ const ROLE_HIERARCHY: Record<string, number> = {
   MANAGER: 10,
   ADMIN: 10,
   ADMIN_LOJA: 10,
+  // OWNER é o cargo legado de todos os donos de loja (contas criadas antes do
+  // RBAC atual, que já nasciam com OWNER no store_user_access). O dono é a
+  // autoridade máxima da loja: hierarquia acima de GERENTE/ADMIN_LOJA.
+  // Não é atribuível pela gestão de equipe (whitelist própria), então não há
+  // vetor de escalada.
+  OWNER: 20,
 };
 
 const MIN_ROLE_FOR_ACTION: Record<StoreAction, string> = {

@@ -7,7 +7,7 @@ import { requireInternalTeam } from '../middleware/requireInternalTeam';
 import { requireAdmin2FA } from '../middleware/requireAdmin2FA';
 import { requireInternalPermission } from '../middleware/requireInternalPermission';
 import { requireDestructiveConfirmation } from '../middleware/requireDestructiveConfirmation';
-import { scopedClientFilter, requireScopedClientParam, requireScopedStoreParam, requireScopedUserParam, requireScopedSubscriptionParam, requireScopedInvoiceParam } from '../middleware/requireClientScope';
+import { scopedClientFilter, requireScopedClientParam, requireScopedStoreParam, requireScopedUserParam, requireScopedSubscriptionParam, requireScopedInvoiceParam, requireScopedReceiptParam } from '../middleware/requireClientScope';
 import { requireStrictSuperAdmin } from '../middleware/requireStrictSuperAdmin';
 import { rateLimitDistributed } from '../lib/rateLimit';
 
@@ -122,6 +122,16 @@ router.put('/subscriptions/:id/cancel', requireInternalPermission('FINANCEIRO', 
 router.put('/subscriptions/:id/plan', requireInternalPermission('FINANCEIRO', 'FULL'), requireScopedSubscriptionParam, superAdminController.changeSubscriptionPlan.bind(superAdminController));
 router.post('/subscriptions/:id/invoices', requireInternalPermission('FINANCEIRO', 'FULL'), requireScopedSubscriptionParam, superAdminController.generateInvoice.bind(superAdminController));
 router.put('/invoices/:id/pay', requireInternalPermission('FINANCEIRO', 'FULL'), requireScopedInvoiceParam, superAdminController.payInvoice.bind(superAdminController));
+
+// Renovação manual via Pix (comprovantes) — aprovação estritamente
+// administrativa; o lojista NUNCA tem acesso a estas rotas (requireAuth +
+// requireAdmin2FA + permissão FINANCEIRO + escopo de cliente).
+router.post('/subscriptions/approve', requireInternalPermission('FINANCEIRO', 'FULL'), requireScopedSubscriptionParam, superAdminController.approveSubscription.bind(superAdminController));
+router.get('/pix-proofs', scopedClientFilter, requireInternalPermission('FINANCEIRO', 'VIEW'), superAdminController.listPixProofs.bind(superAdminController));
+router.post('/pix-proofs/:id/approve', requireInternalPermission('FINANCEIRO', 'FULL'), requireScopedReceiptParam, superAdminController.approvePixProof.bind(superAdminController));
+router.post('/pix-proofs/:id/reject', requireInternalPermission('FINANCEIRO', 'FULL'), requireScopedReceiptParam, superAdminController.rejectPixProof.bind(superAdminController));
+router.put('/pix-config', requireInternalPermission('FINANCEIRO', 'FULL'), superAdminController.updatePixConfig.bind(superAdminController));
+router.get('/pix-config', requireInternalPermission('FINANCEIRO', 'VIEW'), superAdminController.getPixConfig.bind(superAdminController));
 
 // Módulo Features por Loja
 router.get('/stores/:storeId/features', requireInternalPermission('CLIENTES', 'VIEW'), requireScopedStoreParam, superAdminController.updateStoreFeatures.bind(superAdminController));

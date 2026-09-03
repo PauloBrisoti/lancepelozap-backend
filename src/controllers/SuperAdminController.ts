@@ -9,19 +9,32 @@ import fs from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
 import { toZonedTime, fromZonedTime } from 'date-fns-tz';
-import { getTimezone, parseDate } from '../lib/dateUtils';
+import { getTimezone, parseDate, todayInTimezone } from '../lib/dateUtils';
 import { buildPlan, executePlan, enviarRelatorio } from '../services/VarreduraFinanceiraService';
 import { isStrictSuperAdmin } from '../middleware/requireStrictSuperAdmin';
+import { getScopedClientId } from '../middleware/requireClientScope';
+import { PIX_SUBSCRIPTION_CONFIG_KEY } from './SubscriptionController';
+
+/**
+ * Próximo vencimento de assinatura (+30 dias) a partir da data armazenada,
+ * com base em max(hoje, vencimento atual) — impede renovação retroativa que
+ * geraria "crédito" de dias. Todo o cálculo é baseado em strings de data
+ * ("yyyy-MM-dd"), imune a deslocamentos de fuso do @db.Date.
+ */
+function proximoVencimento(dataVencimento: Date): Date {
+  const stored = dataVencimento.toISOString().slice(0, 10);
+  const hoje = todayInTimezone();
+  const base = stored > hoje ? stored : hoje;
+  const d = new Date(`${base}T00:00:00.000`);
+  d.setDate(d.getDate() + 30);
+  return d;
+}
 
 // SEGURANÇA: devolve as stores de um control com os segredos mascarados
-// (whatsappApiKey, credenciais de whatsappApiUrl) — nunca expor chaves de
-// integração nas listagens do painel. chavePix segue crua: a tela de edição
-// de loja do painel admin carrega e salva o valor real.
+// chavePix segue crua: a tela de edição de loja do painel admin carrega e salva o valor real.
 function maskStoreSecrets(stores: any[]) {
   return stores.map((s: any) => ({
     ...s,
-    whatsappApiKey: s.whatsappApiKey ? `${s.whatsappApiKey.slice(0, 4)}****` : null,
-    whatsappApiUrl: s.whatsappApiUrl ? s.whatsappApiUrl.replace(/\/\/[^@/]*@/, '//***@') : null,
   }));
 }
 
@@ -325,7 +338,7 @@ export class SuperAdminController {
       }
 
       // SEGURANÇA: nunca devolver o objeto completo do Prisma na resposta —
-      // newUser contém senhaHash, newStore contém chavePix/whatsappApiKey.
+      // newUser contém senhaHash, newStore contém chavePix.
       const { newClient, newStore, newUser, newSubscription } = transactionResult;
       return res.status(201).json({
         client: {
@@ -399,29 +412,51 @@ export class SuperAdminController {
     }
 
     if (planId || statusPagamento || dataVencimento) {
+      const subData: any = {};
+      if (planId) {
+        const plan = await prisma.plan.findUnique({ where: { id: planId } });
+        if (!plan) return res.status(404).json({ error: 'Plano não encontrado' });
+        subData.planId = planId;
+        subData.valorMensalidade = plan.precoMensal;
+      }
+      if (statusPagamento) {
+        subData.statusPagamento = statusPagamento;
+      }
+      if (dataVencimento) {
+        subData.dataVencimento = parseDate(dataVencimento) || new Date();
+      }
+
       const latestSub = await prisma.subscription.findFirst({
         where: { clientId: id },
         orderBy: { createdAt: 'desc' }
       });
 
       if (latestSub) {
-        const updateData: any = {};
-        if (planId) {
-          const plan = await prisma.plan.findUnique({ where: { id: planId } });
-          if (!plan) return res.status(404).json({ error: 'Plano não encontrado' });
-          updateData.planId = planId;
-          updateData.valorMensalidade = plan.precoMensal;
-        }
-        if (statusPagamento) {
-          updateData.statusPagamento = statusPagamento;
-        }
-        if (dataVencimento) {
-          updateData.dataVencimento = parseDate(dataVencimento) || new Date();
-        }
-
         await prisma.subscription.update({
           where: { id: latestSub.id },
-          data: updateData
+          data: subData
+        });
+      } else {
+        // Cliente sem assinatura: cria a assinatura para que Plano, Status e
+        // Data de Vencimento realmente persistam (antes eram descartados em
+        // silêncio e a tela voltava vazia ao reabrir).
+        let plan = subData.planId
+          ? await prisma.plan.findUnique({ where: { id: subData.planId } })
+          : null;
+        if (!plan) plan = await prisma.plan.findFirst({ orderBy: { precoMensal: 'asc' } });
+        if (!plan) {
+          plan = await prisma.plan.create({
+            data: { nome: 'Starter', precoMensal: 49, maxControls: 1, maxStores: 1 }
+          });
+        }
+        await prisma.subscription.create({
+          data: {
+            clientId: id,
+            planId: plan.id,
+            valorMensalidade: subData.valorMensalidade ?? plan.precoMensal,
+            dataVencimento: subData.dataVencimento ?? new Date(),
+            statusPagamento: subData.statusPagamento ?? 'PAGO',
+          }
         });
       }
     }
@@ -1167,11 +1202,12 @@ export class SuperAdminController {
       anteriores.email = user.email;
     }
     if (role !== undefined) {
-      // Mudança de papel é privilégio de raiz; whitelist impede valores arbitrários
+      // Mudança de papel é privilégio exclusivo de SUPER_ADMIN real (raiz);
+      // whitelist rígida impede injeção de privilégios (valores arbitrários rejeitados).
       if (!isRoot) {
         return res.status(403).json({ error: 'Apenas SUPER_ADMIN pode alterar o papel de um usuário.' });
       }
-      const ALLOWED_ROLES = ['SUPER_ADMIN', 'USER'];
+      const ALLOWED_ROLES = ['SUPER_ADMIN', 'GERENTE', 'USER'];
       if (!ALLOWED_ROLES.includes(role)) {
         return res.status(400).json({ error: 'Papel inválido.' });
       }
@@ -1197,6 +1233,27 @@ export class SuperAdminController {
       data,
     });
 
+    // Sincroniza o acesso por loja quando o cargo global mudou de fato:
+    // promovido a GERENTE → sobe CAIXA/VENDEDOR para GERENTE nas lojas do usuário
+    // (as rotas financeiras exigem cargo GERENTE no StoreUserAccess);
+    // rebaixado de GERENTE para USER → volta as lojas promovidas para VENDEDOR.
+    let lojasAjustadas = 0;
+    if (role !== undefined && role !== user.role) {
+      if (role === 'GERENTE') {
+        const r = await prisma.storeUserAccess.updateMany({
+          where: { userId, role: { in: ['CAIXA', 'VENDEDOR'] } },
+          data: { role: 'GERENTE' },
+        });
+        lojasAjustadas = r.count;
+      } else if (user.role === 'GERENTE') {
+        const r = await prisma.storeUserAccess.updateMany({
+          where: { userId, role: 'GERENTE' },
+          data: { role: 'VENDEDOR' },
+        });
+        lojasAjustadas = r.count;
+      }
+    }
+
     await prisma.auditLog.create({
       data: {
         userId: req.user!.id,
@@ -1208,7 +1265,22 @@ export class SuperAdminController {
       },
     });
 
-    return res.json({ message: 'Usuário atualizado com sucesso' });
+    // Auditoria dedicada de mudança de cargo: quem alterou (userId da ação),
+    // qual usuário foi modificado, quando (createdAt) e o novo cargo.
+    if (role !== undefined && role !== user.role) {
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user!.id,
+          storeId: null,
+          acao: 'USER_ROLE_CHANGED',
+          tabelaAfetada: 'users',
+          dadosAntigos: { userId, de: user.role },
+          dadosNovos: { userId, para: role, alteradoPor: req.user!.id, lojasAjustadas },
+        },
+      });
+    }
+
+    return res.json({ message: 'Usuário atualizado com sucesso', lojasAjustadas });
   }, "atualizar usuário");
 
   async deleteUser(req: Request, res: Response) {
@@ -1458,6 +1530,297 @@ export class SuperAdminController {
       return res.json({ message: 'Fatura marcada como paga' });
     } catch (error) {
       return res.status(500).json({ error: 'Erro ao pagar fatura' });
+    }
+  }
+
+  // ==========================================
+  // RENOVAÇÃO MANUAL VIA PIX (comprovantes)
+  // ==========================================
+
+  // Lista comprovantes de renovação Pix (filtrados pelo escopo do papel admin)
+  async listPixProofs(req: Request, res: Response) {
+    try {
+      const scope = (req as any).scopedClientId as string | null;
+      const { status } = req.query as { status?: string };
+
+      const receipts = await prisma.paymentReceipt.findMany({
+        where: {
+          ...(scope ? { clientId: scope } : {}),
+          ...(status && ['AGUARDANDO_VALIDACAO', 'APROVADO', 'REJEITADO'].includes(status) ? { status } : {}),
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 200,
+        include: {
+          client: { select: { nomeCompleto: true, email: true, telefoneWhatsapp: true } },
+          subscription: { include: { plan: { select: { nome: true } } } },
+        },
+      });
+
+      return res.json({
+        total: receipts.length,
+        comprovantes: receipts.map(r => ({
+          id: r.id,
+          clientId: r.clientId,
+          cliente: r.client.nomeCompleto,
+          email: r.client.email,
+          whatsapp: r.client.telefoneWhatsapp,
+          plano: r.subscription.plan?.nome || 'Desconhecido',
+          status: r.status,
+          transactionId: r.transactionId,
+          valorDeclarado: Number(r.valorDeclarado),
+          arquivoOriginal: r.arquivoOriginal,
+          temArquivo: !!r.arquivoPath,
+          motivoRejeicao: r.motivoRejeicao,
+          aprovadoEm: r.aprovadoEm,
+          rejeitadoEm: r.rejeitadoEm,
+          createdAt: r.createdAt,
+        })),
+      });
+    } catch (error) {
+      logger.error('Erro ao listar comprovantes Pix', error);
+      return res.status(500).json({ error: 'Erro ao listar comprovantes' });
+    }
+  }
+
+  /**
+   * Aprova um comprovante Pix e estende a assinatura em +30 dias.
+   *
+   * SEGURANÇA: nada vem do body do front-end — nem status, nem data, nem
+   * valor. A extensão é calculada no servidor a partir da data de
+   * vencimento atual (max(hoje, vencimento atual)) e o valor da fatura é
+   * derivado da assinatura no banco. Idempotente: um comprovante já
+   * processado não pode ser aprovado duas vezes.
+   */
+  async approvePixProof(req: Request, res: Response) {
+    try {
+      const id = req.params.id as string;
+      const adminId = req.user?.id as string;
+
+      const receipt = await prisma.paymentReceipt.findUnique({
+        where: { id },
+        include: { subscription: true },
+      });
+      if (!receipt) return res.status(404).json({ error: 'Comprovante não encontrado' });
+
+      if (receipt.status !== 'AGUARDANDO_VALIDACAO') {
+        return res.status(409).json({
+          error: receipt.status === 'APROVADO'
+            ? 'Este comprovante já foi aprovado.'
+            : 'Este comprovante já foi rejeitado.',
+        });
+      }
+
+      const hoje = new Date();
+      hoje.setHours(0, 0, 0, 0);
+
+      // Extensão sempre a partir de max(hoje, vencimento atual) — impede
+      // renovação retroativa que geraria "crédito" de dias para o lojista.
+      const novoVencimento = proximoVencimento(receipt.subscription.dataVencimento);
+
+      const mesReferencia = hoje.toISOString().slice(0, 7);
+
+      const [, , subAtualizada] = await prisma.$transaction([
+        prisma.paymentReceipt.update({
+          where: { id: receipt.id },
+          data: {
+            status: 'APROVADO',
+            aprovadoPor: adminId,
+            aprovadoEm: new Date(),
+          },
+        }),
+        prisma.invoice.upsert({
+          where: {
+            // Invoice não tem unique natural; cria se não existir para o mês
+            id: `pix-${receipt.subscriptionId}-${mesReferencia}`,
+          },
+          create: {
+            id: `pix-${receipt.subscriptionId}-${mesReferencia}`,
+            subscriptionId: receipt.subscriptionId,
+            mesReferencia,
+            valorCobrado: receipt.subscription.valorMensalidade,
+            status: 'PAGO',
+            dataPagamento: new Date(),
+          },
+          update: {},
+        }),
+        prisma.subscription.update({
+          where: { id: receipt.subscriptionId },
+          data: {
+            statusPagamento: 'PAGO',
+            dataVencimento: novoVencimento,
+          },
+        }),
+      ]);
+
+      return res.json({
+        message: `Comprovante aprovado! Assinatura estendida até ${novoVencimento.toISOString().slice(0, 10)} (+30 dias).`,
+        subscription: { id: subAtualizada.id, statusPagamento: subAtualizada.statusPagamento, dataVencimento: subAtualizada.dataVencimento },
+      });
+    } catch (error) {
+      logger.error('Erro ao aprovar comprovante Pix', error);
+      return res.status(500).json({ error: 'Erro ao aprovar comprovante' });
+    }
+  }
+
+  // Rejeita um comprovante Pix (motivo obrigatório, registrado para auditoria)
+  async rejectPixProof(req: Request, res: Response) {
+    try {
+      const id = req.params.id as string;
+      const adminId = req.user?.id as string;
+      const body = (req.body ?? {}) as { motivo?: unknown };
+
+      const motivoStr = typeof body.motivo === 'string' ? body.motivo.trim().slice(0, 500) : '';
+      if (!motivoStr) {
+        return res.status(400).json({ error: 'Informe o motivo da rejeição.' });
+      }
+
+      const receipt = await prisma.paymentReceipt.findUnique({ where: { id } });
+      if (!receipt) return res.status(404).json({ error: 'Comprovante não encontrado' });
+
+      if (receipt.status !== 'AGUARDANDO_VALIDACAO') {
+        return res.status(409).json({
+          error: receipt.status === 'APROVADO'
+            ? 'Este comprovante já foi aprovado.'
+            : 'Este comprovante já foi rejeitado.',
+        });
+      }
+
+      await prisma.paymentReceipt.update({
+        where: { id },
+        data: {
+          status: 'REJEITADO',
+          motivoRejeicao: motivoStr,
+          rejeitadoPor: adminId,
+          rejeitadoEm: new Date(),
+        },
+      });
+
+      return res.json({ message: 'Comprovante rejeitado.' });
+    } catch (error) {
+      logger.error('Erro ao rejeitar comprovante Pix', error);
+      return res.status(500).json({ error: 'Erro ao rejeitar comprovante' });
+    }
+  }
+
+  /**
+   * Aprovação direta de assinatura (sem comprovante) — usada pelo painel
+   * administrativo. Restrita a admin (rotas FINANCEIRO FULL + escopo) e o
+   * status/data NUNCA vêm do body: apenas o subscriptionId, com a extensão
+   * de +30 dias calculada no servidor.
+   */
+  async approveSubscription(req: Request, res: Response) {
+    try {
+      const subscriptionId = req.body?.subscriptionId as unknown;
+      if (typeof subscriptionId !== 'string' || !subscriptionId) {
+        return res.status(400).json({ error: 'subscriptionId é obrigatório.' });
+      }
+
+      const subscription = await prisma.subscription.findUnique({ where: { id: subscriptionId } });
+      if (!subscription) return res.status(404).json({ error: 'Assinatura não encontrada' });
+
+      // Escopo do papel interno: aprovação só dentro do cliente autorizado
+      const scope = await getScopedClientId(req);
+      if (scope && subscription.clientId !== scope) {
+        return res.status(403).json({ error: 'Acesso negado. Escopo restrito ao seu cliente.' });
+      }
+
+      const novoVencimento = proximoVencimento(subscription.dataVencimento);
+
+      const mesReferencia = new Date().toISOString().slice(0, 7);
+
+      const [, subAtualizada] = await prisma.$transaction([
+        prisma.invoice.upsert({
+          where: { id: `pix-${subscription.id}-${mesReferencia}` },
+          create: {
+            id: `pix-${subscription.id}-${mesReferencia}`,
+            subscriptionId: subscription.id,
+            mesReferencia,
+            valorCobrado: subscription.valorMensalidade,
+            status: 'PAGO',
+            dataPagamento: new Date(),
+          },
+          update: {},
+        }),
+        prisma.subscription.update({
+          where: { id: subscription.id },
+          data: {
+            statusPagamento: 'PAGO',
+            dataVencimento: novoVencimento,
+          },
+        }),
+      ]);
+
+      return res.json({
+        message: `Assinatura aprovada! Renovada até ${novoVencimento.toISOString().slice(0, 10)} (+30 dias).`,
+        subscription: { id: subAtualizada.id, statusPagamento: subAtualizada.statusPagamento, dataVencimento: subAtualizada.dataVencimento },
+      });
+    } catch (error) {
+      logger.error('Erro ao aprovar assinatura', error);
+      return res.status(500).json({ error: 'Erro ao aprovar assinatura' });
+    }
+  }
+
+  // Leitura da chave Pix oficial (painel administrativo)
+  async getPixConfig(_req: Request, res: Response) {
+    try {
+      const setting = await prisma.systemSetting.findUnique({ where: { chave: PIX_SUBSCRIPTION_CONFIG_KEY } });
+      const raw = setting?.valor as { chavePix?: unknown; beneficiario?: unknown; whatsappSuporte?: unknown } | null;
+      return res.json({
+        chavePix: typeof raw?.chavePix === 'string' ? raw.chavePix : '',
+        beneficiario: typeof raw?.beneficiario === 'string' ? raw.beneficiario : '',
+        whatsappSuporte: typeof raw?.whatsappSuporte === 'string' ? raw.whatsappSuporte : '',
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar chave Pix', error);
+      return res.status(500).json({ error: 'Erro ao buscar chave Pix' });
+    }
+  }
+
+  // Configuração da chave Pix oficial para renovação manual (SystemSetting)
+  async updatePixConfig(req: Request, res: Response) {
+    try {
+      const body = (req.body ?? {}) as {
+        chavePix?: unknown;
+        beneficiario?: unknown;
+        whatsappSuporte?: unknown;
+      };
+      const { chavePix, beneficiario, whatsappSuporte } = body;
+
+      if (typeof chavePix !== 'string' || !chavePix.trim() || chavePix.trim().length > 100) {
+        return res.status(400).json({ error: 'Chave Pix inválida.' });
+      }
+
+      const chave = chavePix.trim();
+      // Validação leve de formato: email, telefone, CPF/CNPJ, EVP (UUID) ou aleatória
+      const validaChave = /^[A-Za-z0-9._%+\-@:]+$/.test(chave);
+      if (!validaChave) {
+        return res.status(400).json({ error: 'Chave Pix contém caracteres inválidos.' });
+      }
+
+      await prisma.systemSetting.upsert({
+        where: { chave: PIX_SUBSCRIPTION_CONFIG_KEY },
+        create: {
+          chave: PIX_SUBSCRIPTION_CONFIG_KEY,
+          valor: {
+            chavePix: chave,
+            beneficiario: typeof beneficiario === 'string' ? beneficiario.trim().slice(0, 120) : '',
+            whatsappSuporte: typeof whatsappSuporte === 'string' ? whatsappSuporte.trim().slice(0, 30) : '',
+          },
+          descricao: 'Chave Pix oficial para renovação manual de assinaturas',
+        },
+        update: {
+          valor: {
+            chavePix: chave,
+            beneficiario: typeof beneficiario === 'string' ? beneficiario.trim().slice(0, 120) : '',
+            whatsappSuporte: typeof whatsappSuporte === 'string' ? whatsappSuporte.trim().slice(0, 30) : '',
+          },
+        },
+      });
+
+      return res.json({ message: 'Chave Pix de assinatura atualizada com sucesso.' });
+    } catch (error) {
+      logger.error('Erro ao atualizar chave Pix', error);
+      return res.status(500).json({ error: 'Erro ao atualizar chave Pix' });
     }
   }
 

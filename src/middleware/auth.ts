@@ -74,6 +74,22 @@ async function validateSessionState(payload: { id: string; tv?: number }) {
   return null;
 }
 
+// Rotas do fluxo de RENOVAÇÃO Pix manual que continuam acessíveis a
+// assinaturas bloqueadas (VENCIDO/INADIMPLENTE) — o lojista precisa pagar
+// para voltar a usar o sistema. A autenticação JWT continua obrigatória e
+// nenhuma destas rotas altera status: apenas consultam a chave/valor ou
+// criam comprovantes AGUARDANDO_VALIDACAO (aprovação é 100% administrativa).
+const PAYMENT_FLOW_PATHS = [
+  '/api/subscriptions/pix-config',
+  '/api/subscriptions/payment-proof',
+  '/api/subscriptions/payment-proofs',
+];
+
+function isPaymentFlowPath(req: Request): boolean {
+  const path = (req.originalUrl || req.url).split('?')[0];
+  return PAYMENT_FLOW_PATHS.some((prefix) => path.startsWith(prefix));
+}
+
 export async function requireAuth(req: Request, res: Response, next: NextFunction) {
   const JWT_SECRET = process.env.JWT_SECRET;
   if (!JWT_SECRET) {
@@ -140,6 +156,11 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       const sessionError = await validateSessionState(payload);
       if (sessionError) {
         return res.status(sessionError.status).json({ error: sessionError.error });
+      }
+
+      // Fluxo de pagamento: libera mesmo com assinatura bloqueada (ver isPaymentFlowPath)
+      if (isPaymentFlowPath(req)) {
+        return next();
       }
 
       if (await checkActiveSubscription(payload.clientId, payload.storeId, payload.allowedStoreIds)) {

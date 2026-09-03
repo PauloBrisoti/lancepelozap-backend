@@ -1,8 +1,6 @@
 import { Router } from "express";
 import { requireAuth } from "../middleware/auth";
-import { requirePlanFeature } from "../middleware/requirePlanFeature";
 import { requireStorePermission } from "../middleware/requireStorePermission";
-import rateLimit from "express-rate-limit";
 import {
   listTutors, createTutor, updateTutor, deleteTutor,
   listPets, createPet, updatePet, deletePet, adoptPet,
@@ -15,15 +13,6 @@ import {
 const router = Router();
 
 router.use(requireAuth);
-
-// Envio de WhatsApp é limitado por funcionário para não queimar créditos da loja
-const whatsappReminderLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 5,
-  message: { error: 'Muitos lembretes por minuto. Tente novamente em instantes.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
 
 // Tutors
 router.get("/tutors", listTutors);
@@ -63,8 +52,6 @@ router.put("/service-orders/:id", requireStorePermission('gerenciar_clientes'), 
 router.delete("/service-orders/:id", requireStorePermission('gerenciar_clientes'), deleteServiceOrder);
 router.post("/service-orders/:id/lembrar",
   requireStorePermission('gerenciar_clientes'),
-  requirePlanFeature('whatsapp'),
-  whatsappReminderLimiter,
   remindServiceOrder);
 
 export default router;
