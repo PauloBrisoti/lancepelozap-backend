@@ -2454,6 +2454,25 @@ export class SuperAdminController {
     return res.json({ message: 'Features atualizadas', features: features || {} });
   }, "atualizar features da loja");
 
+  updateStore = asyncHandler(async (req: Request, res: Response) => {
+    const storeId = req.params.storeId as string;
+    const body = req.body as Record<string, string | undefined>;
+
+    const store = await prisma.store.findUnique({ where: { id: storeId } });
+    if (!store) return res.status(404).json({ error: 'Loja não encontrada' });
+
+    const updated = await prisma.store.update({
+      where: { id: storeId },
+      data: {
+        nichoPrincipal: body.nichoPrincipal ?? store.nichoPrincipal,
+        nomeFantasia: body.nomeFantasia ?? store.nomeFantasia,
+        status: body.status ?? store.status,
+      },
+    });
+
+    return res.json({ message: 'Loja atualizada', store: { id: updated.id, nichoPrincipal: updated.nichoPrincipal, nomeFantasia: updated.nomeFantasia, status: updated.status } });
+  }, "atualizar loja");
+
   triggerBilling = asyncHandler(async (_req: Request, res: Response) => {
     const plano = await buildPlan();
     const { jaExecutadoHoje, resultado } = await executePlan(plano, 'manual');
