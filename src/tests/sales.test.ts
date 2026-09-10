@@ -141,6 +141,39 @@ describe('Sales CRUD (integração)', () => {
     expect(Number(produtoDepois!.qtdEstoqueAtual)).toBe(qtdAntes - 3);
   });
 
+  it('DELETE /api/sales/:id — estorna wallet corretamente (mirror SAIDA + decrement)', async () => {
+    const created = await agent.post('/api/sales').send({
+      itens: [{ productId, quantidade: 2, precoUnitarioVendido: 25 }],
+      formaPagamento: 'DINHEIRO',
+    });
+    expect(created.status).toBe(201);
+    const saleId = created.body.id;
+
+    const txEntrada = await prisma.financialTransaction.findFirst({
+      where: { saleId, tipo: 'ENTRADA' }
+    });
+    expect(txEntrada).not.toBeNull();
+
+    const ftWalletId = txEntrada!.walletId;
+    const walletAntes = Number((await prisma.wallet.findUnique({ where: { id: ftWalletId } }))!.saldoAtual);
+
+    const res = await agent
+      .delete(`/api/sales/${saleId}`)
+      .send({ password: '123456' });
+    expect(res.status).toBe(200);
+
+    const txEstornada = await prisma.financialTransaction.findUnique({ where: { id: txEntrada!.id } });
+    expect(txEstornada!.status).toBe('ESTORNADA');
+
+    const txSaida = await prisma.financialTransaction.findFirst({
+      where: { walletId: ftWalletId, tipo: 'SAIDA', status: 'ATIVA', valor: txEntrada!.valor }
+    });
+    expect(txSaida).not.toBeNull();
+
+    const walletDepois = Number((await prisma.wallet.findUnique({ where: { id: ftWalletId } }))!.saldoAtual);
+    expect(walletDepois).toBe(walletAntes - Number(txEntrada!.valor));
+  });
+
   it('GET /api/sales — sem auth retorna 401', async () => {
     const res = await request(app).get('/api/sales');
     expect(res.status).toBe(401);

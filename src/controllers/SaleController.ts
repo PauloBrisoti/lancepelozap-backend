@@ -984,12 +984,33 @@ async cancel(req: Request, res: Response) {
           });
         }
 
-        // 3. Unlink financial transactions (saleId set to null via onDelete SetNull)
+        // 3. Reverter financeiro com estorno (mesma lógica de cancel)
         for (const ft of sale.financialTransactions) {
           if (ft.tipo === 'ENTRADA') {
+            // 3a. Marca a transação original como estornada
             await tx.financialTransaction.update({
               where: { id: ft.id },
               data: { status: 'ESTORNADA', saleId: null, receivableId: null },
+            });
+
+            // 3b. Cria espelho de SAIDA (artefato contábil do estorno)
+            await tx.financialTransaction.create({
+              data: {
+                storeId: sale.storeId,
+                walletId: ft.walletId,
+                tipo: 'SAIDA',
+                status: 'ATIVA',
+                valor: ft.valor,
+                descricao: `Estorno exclusão de venda #${sale.id.substring(0, 8)}`,
+                categoria: CATEGORIA_CANCELAMENTO,
+                dataTransacao: new Date(),
+              }
+            });
+
+            // 3c. Decrementa saldo real da carteira
+            await tx.wallet.update({
+              where: { id: ft.walletId },
+              data: { saldoAtual: { decrement: ft.valor } }
             });
           }
         }
