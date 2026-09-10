@@ -80,7 +80,7 @@ export class ReturnsController {
 
     // Check for existing returns on this sale
     const existingReturns = await prisma.productReturn.findMany({
-      where: { saleId, status: { in: ["PENDENTE", "APROVADO"] } },
+      where: { saleId, status: { in: ["PENDENTE", "APROVADO", "CONCLUIDO"] } },
       include: { items: true },
     });
 
