@@ -206,8 +206,8 @@ const superAdminLimiter = rateLimitDistributed({
   keyPrefix: 'admin',
   keys: { ip: true, user: true },
   limits: [
-    { windowMs: 60 * 1000, max: limitFor(30) },
-    { windowMs: 60 * 60 * 1000, max: limitFor(200) },
+    { windowMs: 60 * 1000, max: limitFor(60) },
+    { windowMs: 60 * 60 * 1000, max: limitFor(400) },
   ],
   message: 'Muitas requisições administrativas.',
 });
