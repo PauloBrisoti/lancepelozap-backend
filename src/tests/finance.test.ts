@@ -64,6 +64,98 @@ describe('Cálculos Financeiros', () => {
     expect(Number(product?.precoCusto)).toBe(50);
   });
 
+  it('Parcelamento de payable deve dividir valor corretamente entre parcelas', async () => {
+    // Cria wallet para a loja
+    const wallet = await prisma.wallet.create({
+      data: {
+        storeId: clientA.store.id,
+        nome: 'Caixa Teste Parcelas',
+        tipo: 'CAIXA',
+        saldoAtual: 0
+      }
+    });
+
+    // Cria transação parcelada: R$100,00 em 3 parcelas
+    // Esperado: 2 parcelas de R$33,33 + 1 de R$33,34 = R$100,00 (última absorve centavo extra)
+    const res = await request(app)
+      .post('/api/finance/transactions')
+      .set('Cookie', [`authToken=${tokenA}`])
+      .set('x-store-id', clientA.store.id)
+      .send({
+        walletId: wallet.id,
+        tipo: 'SAIDA',
+        valor: 100,
+        descricao: 'Teste Parcelamento',
+        categoria: 'Teste',
+        dataTransacao: new Date().toISOString(),
+        isParcelado: 'true',
+        numeroParcelas: 3,
+        frequencia: 'MENSAL',
+        isFirstPaid: 'false'
+      });
+
+    expect(res.status).toBe(201);
+
+    // Verifica que os payables foram criados com valores corretos
+    const payables = await prisma.accountPayable.findMany({
+      where: { storeId: clientA.store.id, descricao: { contains: 'Teste Parcelamento' } },
+      orderBy: { numeroParcela: 'asc' }
+    });
+
+    expect(payables).toHaveLength(3);
+    // Soma das parcelas deve ser exatamente R$100,00
+    const somaParcelas = payables.reduce((acc, p) => acc + Number(p.valor), 0);
+    expect(somaParcelas).toBe(100);
+    // Primeira e segunda parcelas: R$33,33 (100/3 arredondado)
+    expect(Number(payables[0].valor)).toBe(33.33);
+    expect(Number(payables[1].valor)).toBe(33.33);
+    // Última parcela absorve a diferença: R$33,34
+    expect(Number(payables[2].valor)).toBe(33.34);
+  });
+
+  it('Parcelamento de payable com valor que gera centavo ímpar', async () => {
+    const wallet = await prisma.wallet.create({
+      data: {
+        storeId: clientA.store.id,
+        nome: 'Caixa Teste Centavo',
+        tipo: 'CAIXA',
+        saldoAtual: 0
+      }
+    });
+
+    // R$10,01 em 3 parcelas: 2x R$3,34 + 1x R$3,33 = R$10,01
+    const res = await request(app)
+      .post('/api/finance/transactions')
+      .set('Cookie', [`authToken=${tokenA}`])
+      .set('x-store-id', clientA.store.id)
+      .send({
+        walletId: wallet.id,
+        tipo: 'SAIDA',
+        valor: 10.01,
+        descricao: 'Teste Centavo',
+        categoria: 'Teste',
+        dataTransacao: new Date().toISOString(),
+        isParcelado: 'true',
+        numeroParcelas: 3,
+        frequencia: 'MENSAL',
+        isFirstPaid: 'false'
+      });
+
+    expect(res.status).toBe(201);
+
+    const payables = await prisma.accountPayable.findMany({
+      where: { storeId: clientA.store.id, descricao: { contains: 'Teste Centavo' } },
+      orderBy: { numeroParcela: 'asc' }
+    });
+
+    expect(payables).toHaveLength(3);
+    const somaParcelas = payables.reduce((acc, p) => acc + Number(p.valor), 0);
+    expect(somaParcelas).toBeCloseTo(10.01, 2);
+    expect(Number(payables[0].valor)).toBe(3.34);
+    expect(Number(payables[1].valor)).toBe(3.34);
+    expect(Number(payables[2].valor)).toBe(3.33);
+  });
+
   it('Divisão por zero no cálculo percentual', async () => {
     // Quando o preço for zero (doação, brinde), a API não deve travar
     const res = await request(app)
