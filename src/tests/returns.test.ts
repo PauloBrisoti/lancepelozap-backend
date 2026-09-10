@@ -192,4 +192,60 @@ describe('Devoluções (Returns) API', () => {
       expect(res.status).toBe(400);
     });
   });
+
+  describe('bloqueio de devolução duplicada após CONCLUIDO', () => {
+    let saleId2: string;
+    let saleItemId2Dup: string;
+
+    beforeAll(async () => {
+      // Cria uma nova venda para testar
+      const sale = await prisma.sale.create({
+        data: {
+          storeId: client.store.id,
+          userId: client.user.id,
+          valorTotalBruto: 100,
+          valorTotalLiquido: 100,
+          formaPagamento: 'DINHEIRO',
+          status: 'FINALIZADA',
+        },
+      });
+      saleId2 = sale.id;
+
+      const saleItem = await prisma.saleItem.create({
+        data: {
+          saleId: sale.id,
+          productId,
+          quantidade: 5,
+          precoUnitarioVendido: 20,
+          custoUnitarioHistorico: 10,
+        },
+      });
+      saleItemId2Dup = saleItem.id;
+    });
+
+    it('impede criar segunda devolução para itens já devolvidos (CONCLUIDO)', async () => {
+      // Cria e aprova primeira devolução
+      const ret1 = await request.post('/api/returns').send({
+        saleId: saleId2,
+        items: [{ saleItemId: saleItemId2Dup, quantidade: 3 }],
+      });
+      expect(ret1.status).toBe(201);
+
+      await request.post(`/api/returns/${ret1.body.id}/approve`);
+
+      // Completa a devolução (status → CONCLUIDO)
+      const completeRes = await request.post(`/api/returns/${ret1.body.id}/complete`);
+      expect(completeRes.status).toBe(200);
+      expect(completeRes.body.status).toBe('CONCLUIDO');
+
+      // Tenta criar segunda devolução para os MESMOS itens (3 já devolvidas + 3 = 6 > 5)
+      const ret2 = await request.post('/api/returns').send({
+        saleId: saleId2,
+        items: [{ saleItemId: saleItemId2Dup, quantidade: 3 }],
+      });
+      // Deve ser rejeitada porque já foram devolvidas 3 de 5 e agora pede mais 3
+      expect(ret2.status).toBe(400);
+      expect(ret2.body.message).toMatch(/excede|já devolvida|quantidade/i);
+    });
+  });
 });
