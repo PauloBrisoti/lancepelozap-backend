@@ -84,8 +84,8 @@ export function requirePlanFeature(feature: Feature) {
 
       next();
     } catch (error) {
-      logger.error("[requirePlanFeature] Error:", error);
-      next();
+      logger.error("[requirePlanFeature] Erro ao verificar feature:", error);
+      return fail(res, 'Erro interno ao verificar funcionalidade do plano. Tente novamente.', 503);
     }
   };
 }
