@@ -315,7 +315,15 @@ export class FinanceController {
           const freq = frequencia as string;
           const primeiraPaga = isFirstPaid === 'true';
 
+          // Calcular valor por parcela com absorção de centavos na última
+          const parcelaBase = Math.round((valorNum / parcelas) * 100) / 100;
+
           for (let i = 0; i < parcelas; i++) {
+            // Última parcela absorve a diferença de arredondamento
+            const valorParcela = (i === parcelas - 1)
+              ? Math.round((valorNum - parcelaBase * (parcelas - 1)) * 100) / 100
+              : parcelaBase;
+
             // Calculate due date
             const dtVencimento = new Date(dtTransacao);
             // Se a 1ª parcela NÃO está paga, o plano de pagamento inicia no próximo período
@@ -341,7 +349,7 @@ export class FinanceController {
                   storeId,
                   walletId,
                   tipo,
-                  valor: valorNum,
+                  valor: valorParcela,
                   descricao: `${descricao} (${i + 1}/${parcelas})`,
                   categoria: normalizarCategoria(categoria),
                   dataTransacao: dtVencimento,
@@ -356,8 +364,8 @@ export class FinanceController {
                 where: { id: walletId },
                 data: {
                   saldoAtual: tipo === 'ENTRADA' 
-                    ? { increment: valorNum }
-                    : { decrement: valorNum }
+                    ? { increment: valorParcela }
+                    : { decrement: valorParcela }
                 }
               });
             } else {
@@ -370,7 +378,7 @@ export class FinanceController {
                     dataVencimento: dtVencimento,
                     numeroParcela: i + 1,
                     totalParcelas: parcelas,
-                    valorParcela: valorNum,
+                    valorParcela: valorParcela,
                     formaPagamentoEsperada: 'Outros',
                     status: 'PENDENTE',
                     urlComprovanteStorage: comprovanteUrl
@@ -385,7 +393,7 @@ export class FinanceController {
                     fornecedor: fornecedor || customerId || null,
                     supplierId: supplierId || null,
                     dataVencimento: dtVencimento,
-                    valor: valorNum,
+                    valor: valorParcela,
                     status: 'PENDENTE'
                   }
                 });
