@@ -17,6 +17,7 @@ COPY package.json package-lock.json* ./
 RUN npm ci
 
 COPY prisma ./prisma
+COPY prisma.config.ts ./
 RUN npx prisma generate
 
 COPY tsconfig.json ./
@@ -40,8 +41,9 @@ COPY --from=build /app/node_modules/@prisma ./node_modules/@prisma
 # Compiled JS
 COPY --from=build /app/dist ./dist
 
-# Prisma schema (needed at runtime for migrations)
+# Prisma schema + config (needed at runtime for migrations)
 COPY --from=build /app/prisma ./prisma
+COPY --from=build /app/prisma.config.ts ./
 
 # Package.json (for "start" script)
 COPY package.json ./

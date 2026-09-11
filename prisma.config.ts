@@ -1,5 +1,4 @@
 import { defineConfig } from 'prisma/config';
-import 'dotenv/config';
 
 export default defineConfig({
   earlyAccess: true,
@@ -16,7 +15,7 @@ export default defineConfig({
       const { PrismaPg } = await import('@prisma/adapter-pg');
       const connectionString = process.env.DATABASE_URL;
       if (!connectionString) {
-        throw new Error('DATABASE_URL não definida no .env');
+        throw new Error('DATABASE_URL não definida');
       }
       return new PrismaPg({ connectionString });
     },
