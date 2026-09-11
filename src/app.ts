@@ -49,6 +49,7 @@ import { insightsRouter } from './routes/insights';
 import petRoutes from "./routes/pet.routes";
 import { notificationRoutes } from './routes/notification.routes';
 import v2Routes from './routes/v2.routes';
+import { wuzapiRoutes } from './routes/wuzapi.routes';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -445,6 +446,9 @@ app.get("/api/health", (_req, res) => {
 
 // V2 Routes
 app.use('/api/v2', v2Routes);
+
+// WhatsApp (WuzAPI)
+app.use('/api/whatsapp', wuzapiRoutes);
 
 // Jobs/cron HTTP-trigger — protegidos por CRON_SECRET (Bearer, timing-safe;
 // query string bloqueada). Para provedores externos de cron (cron-job.org etc.)
