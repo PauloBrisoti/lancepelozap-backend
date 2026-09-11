@@ -173,6 +173,7 @@ const globalLimiter = rateLimitDistributed({
     { windowMs: 60 * 60 * 1000, max: limitFor(600) },
   ],
   message: 'Muitas requisições. Tente novamente em instantes.',
+  skip: (req) => req.path === '/health',
 });
 app.use(globalLimiter);
 
