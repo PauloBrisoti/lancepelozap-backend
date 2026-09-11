@@ -118,6 +118,27 @@ class WuzapiService {
   }
 
   /**
+   * Reconectar sessão existente (regenera QR)
+   * POST /session/connect
+   */
+  async connectSession(sessionToken: string): Promise<void> {
+    const resp = await fetch(`${WUZAPI_URL}/session/connect`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'token': sessionToken,
+      },
+    });
+
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`WuzAPI connectSession failed (${resp.status}): ${text}`);
+    }
+
+    logger.info(`[WuzAPI] Sessão reconectada: ${sessionToken.substring(0, 20)}...`);
+  }
+
+  /**
    * Obter QR code de uma sessão
    * GET /session/qr
    */
@@ -134,6 +155,8 @@ class WuzapiService {
 
     const inner = unwrapWuzApi(await resp.json());
     const qr = inner.base64 || inner.QRCode;
+
+    logger.info(`[WuzAPI] getQRCode response: base64=${inner.base64 ? 'yes' : 'no'} QRCode=${inner.QRCode ? 'yes' : 'no'} keys=${Object.keys(inner).join(',')}`);
 
     if (qr) {
       return qr.startsWith('data:') ? qr : `data:image/png;base64,${qr}`;
