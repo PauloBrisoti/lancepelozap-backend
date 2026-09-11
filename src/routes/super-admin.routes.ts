@@ -179,6 +179,7 @@ router.get('/stores', requireInternalPermission('CONFIGURACOES', 'VIEW'), superA
 router.get('/whatsapp-sessions', requireInternalPermission('CONFIGURACOES', 'VIEW'), superAdminController.listWhatsAppSessions.bind(superAdminController));
 router.post('/whatsapp-sessions', requireInternalPermission('CONFIGURACOES', 'FULL'), superAdminController.createWhatsAppSession.bind(superAdminController));
 router.get('/whatsapp-sessions/:id/qr', requireInternalPermission('CONFIGURACOES', 'FULL'), superAdminController.getWhatsAppQR.bind(superAdminController));
+router.post('/whatsapp-sessions/:id/send', requireInternalPermission('CONFIGURACOES', 'FULL'), superAdminController.sendWhatsAppMessage.bind(superAdminController));
 router.delete('/whatsapp-sessions/:id', requireInternalPermission('CONFIGURACOES', 'FULL'), superAdminController.deleteWhatsAppSession.bind(superAdminController));
 
 export { router as superAdminRoutes };

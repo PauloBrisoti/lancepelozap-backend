@@ -2587,7 +2587,17 @@ export class SuperAdminController {
     }
 
     const { wuzapiService } = await import('../services/WuzapiService');
-    const qr = await wuzapiService.getQRCode(instance.token);
+
+    // Tentar obter QR — se vazio, reconectar a sessão para gerar novo QR
+    let qr = await wuzapiService.getQRCode(instance.token);
+    if (!qr) {
+      logger.info(`[WhatsApp] QR vazio para ${instance.instanceName}, reconectando...`);
+      await wuzapiService.connectSession(instance.token);
+      // Aguardar WuzAPI gerar o QR
+      await new Promise(r => setTimeout(r, 3000));
+      qr = await wuzapiService.getQRCode(instance.token);
+    }
+
     return res.json({ qrCode: qr });
   }, "obter QR WhatsApp");
 
@@ -2600,4 +2610,27 @@ export class SuperAdminController {
     await prisma.whatsAppInstance.delete({ where: { id } });
     return res.json({ message: 'Sessão removida' });
   }, "remover sessão WhatsApp");
+
+  sendWhatsAppMessage = asyncHandler(async (req: Request, res: Response) => {
+    const { id } = req.params as { id: string };
+    const { phone, message } = req.body;
+
+    if (!phone || !message) {
+      return res.status(400).json({ error: 'phone e message são obrigatórios' });
+    }
+
+    const instance = await prisma.whatsAppInstance.findUnique({ where: { id } });
+    if (!instance) {
+      return res.status(404).json({ error: 'Sessão não encontrada' });
+    }
+
+    const { wuzapiService } = await import('../services/WuzapiService');
+    const result = await wuzapiService.sendText(instance.token, phone, message);
+
+    if (!result.success) {
+      return res.status(500).json({ error: result.error || 'Erro ao enviar mensagem' });
+    }
+
+    return res.json({ success: true, id: result.id });
+  }, "enviar mensagem WhatsApp");
 }
