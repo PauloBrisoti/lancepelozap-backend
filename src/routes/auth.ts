@@ -15,9 +15,9 @@ const loginLimiter = rateLimitDistributed({
   keyPrefix: 'auth-login',
   keys: { ip: true, email: true },
   limits: [
-    { windowMs: 60 * 1000, max: limitFor(10) },
-    { windowMs: 15 * 60 * 1000, max: limitFor(20) },
-    { windowMs: 60 * 60 * 1000, max: limitFor(60) },
+    { windowMs: 60 * 1000, max: limitFor(30) },
+    { windowMs: 15 * 60 * 1000, max: limitFor(100) },
+    { windowMs: 60 * 60 * 1000, max: limitFor(300) },
   ],
   message: "Muitas tentativas de login. Tente novamente mais tarde.",
 });
