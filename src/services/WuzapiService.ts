@@ -27,6 +27,11 @@ export interface WuzapiQRCode {
   raw?: string;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function unwrapWuzApi(resp: any): any {
+  return resp?.data ?? resp ?? {};
+}
+
 class WuzapiService {
   /**
    * Headers para requisições ao admin token (gerenciamento de sessões)
@@ -103,15 +108,13 @@ class WuzapiService {
       throw new Error(`WuzAPI connect failed (${connectResp.status}): ${text}`);
     }
 
-    const data = await connectResp.json() as { token?: string; status: string };
-    logger.info(`[WuzAPI] Sessão conectando: ${instanceName} (status: ${data.status})`);
-
-    const sessionToken = data.token || userToken;
+    const connectJson = unwrapWuzApi(await connectResp.json());
+    logger.info(`[WuzAPI] Sessão conectando: ${instanceName} (status: ${connectJson.status || connectJson.details})`);
 
     // Buscar QR code imediatamente
-    const qr = await this.getQRCode(sessionToken);
+    const qr = await this.getQRCode(userToken);
 
-    return { token: sessionToken, qr };
+    return { token: userToken, qr };
   }
 
   /**
@@ -129,10 +132,8 @@ class WuzapiService {
       throw new Error(`WuzAPI getQR failed (${resp.status}): ${text}`);
     }
 
-    const data = await resp.json() as { base64?: string; raw?: string; QRCode?: string };
-
-    // WuzAPI pode retornar { base64: "..." } ou { QRCode: "data:image/..." }
-    const qr = data.base64 || data.QRCode;
+    const inner = unwrapWuzApi(await resp.json());
+    const qr = inner.base64 || inner.QRCode;
 
     if (qr) {
       return qr.startsWith('data:') ? qr : `data:image/png;base64,${qr}`;
@@ -156,11 +157,11 @@ class WuzapiService {
       throw new Error(`WuzAPI status failed (${resp.status}): ${text}`);
     }
 
-    const data = await resp.json() as { status: string; user?: string };
+    const inner = unwrapWuzApi(await resp.json());
     return {
-      connected: data.status === 'connected',
-      status: data.status,
-      user: data.user,
+      connected: inner.connected === true || inner.status === 'connected',
+      status: inner.status || (inner.connected ? 'connected' : 'disconnected'),
+      user: inner.user,
     };
   }
 
@@ -187,7 +188,6 @@ class WuzapiService {
    * POST /chat/send/text
    */
   async sendText(sessionToken: string, phone: string, message: string): Promise<WuzapiMessageResponse> {
-    // Formatar telefone: apenas dígitos, com código do país
     const phoneClean = phone.replace(/\D/g, '');
     const phoneFormatted = phoneClean.startsWith('55') ? phoneClean : `55${phoneClean}`;
 
@@ -206,10 +206,10 @@ class WuzapiService {
       return { success: false, error: text };
     }
 
-    const data = await resp.json() as { id?: string; key?: { id?: string } };
+    const inner = unwrapWuzApi(await resp.json());
     return {
       success: true,
-      id: data.id || data.key?.id,
+      id: inner.id || inner.key?.id,
     };
   }
 
@@ -237,10 +237,10 @@ class WuzapiService {
       return { success: false, error: text };
     }
 
-    const data = await resp.json() as { id?: string; key?: { id?: string } };
+    const inner = unwrapWuzApi(await resp.json());
     return {
       success: true,
-      id: data.id || data.key?.id,
+      id: inner.id || inner.key?.id,
     };
   }
 
@@ -274,10 +274,10 @@ class WuzapiService {
       return { exists: false };
     }
 
-    const data = await resp.json() as { registered?: boolean; jid?: string };
+    const inner = unwrapWuzApi(await resp.json());
     return {
-      exists: data.registered === true,
-      number: data.jid,
+      exists: inner.registered === true,
+      number: inner.jid,
     };
   }
 }
