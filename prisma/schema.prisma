@@ -311,6 +311,8 @@ model Store {
 
   serviceTypes          ServiceType[]
   whatsappInstances     WhatsAppInstance[]
+  whatsappConfig        WhatsAppConfig?
+  whatsappMessageLogs   WhatsAppMessageLog[]
   serviceOrders         ServiceOrder[]
   professionals         Professional[]
   appointments          Appointment[]
@@ -1467,4 +1469,63 @@ model WhatsAppInstance {
   @@index([storeId])
   @@index([status])
   @@map("whatsapp_instances")
+}
+
+// ============================================================
+// WhatsApp — Configuração por loja
+// ============================================================
+
+model WhatsAppConfig {
+  id                    String   @id @default(cuid())
+  storeId               String   @unique @map("store_id")
+  billingEnabled        Boolean  @default(false) @map("billing_enabled")
+  disclaimerAccepted    Boolean  @default(false) @map("disclaimer_accepted")
+  sendReceiptText       Boolean  @default(true) @map("send_receipt_text")
+  sendReceiptPdf        Boolean  @default(false) @map("send_receipt_pdf")
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  store     Store               @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  rules     WhatsAppBillingRule[]
+  logs      WhatsAppMessageLog[]
+
+  @@map("whatsapp_config")
+}
+
+model WhatsAppBillingRule {
+  id              String   @id @default(cuid())
+  configId        String   @map("config_id")
+  ruleType        String   @map("rule_type") // DIAS_ANTES_VENC | DIA_VENC | DIAS_APOS_VENC
+  diasOffset      Int      @map("dias_offset") // -2 = 2 dias antes, 0 = no vencimento, 1 = 1 dia após
+  mensagem        String   @db.Text
+  ativo           Boolean  @default(true)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  config WhatsAppConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
+
+  @@index([configId])
+  @@map("whatsapp_billing_rules")
+}
+
+model WhatsAppMessageLog {
+  id              String   @id @default(cuid())
+  storeId         String   @map("store_id")
+  configId        String?  @map("config_id")
+  tipo            String   // COBRANCA | RECIBO | CREDIARIO | LEMBRETE | MANUAL
+  phone           String
+  message         String   @db.Text
+  status          String   @default("ENVIADO") // ENVIADO | ERRO | CANCELADO
+  externalId      String?  @map("external_id")
+  referenceType   String?  @map("reference_type") // AccountReceivable | Sale | Manual
+  referenceId     String?  @map("reference_id")
+  errorMsg        String?  @map("error_msg") @db.Text
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  store  Store           @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  config WhatsAppConfig? @relation(fields: [configId], references: [id])
+
+  @@index([storeId, tipo])
+  @@index([referenceType, referenceId])
+  @@map("whatsapp_message_logs")
 }

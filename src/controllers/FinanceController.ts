@@ -662,6 +662,13 @@ export class FinanceController {
         });
       });
 
+      // WhatsApp: enviar recibo de pagamento (fire-and-forget)
+      if (quitou) {
+        import('../services/WhatsAppTriggerService').then(m =>
+          m.enviarReciboPagamento(storeId, id)
+        ).catch(() => {});
+      }
+
       return res.json({
         message: quitou ? 'Parcela quitada com sucesso' : 'Pagamento parcial registrado',
         quitou,
