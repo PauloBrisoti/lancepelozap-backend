@@ -68,27 +68,50 @@ class WuzapiService {
 
   /**
    * Criar nova sessão WhatsApp (retorna token + QR code)
-   * POST /session/connect
+   * 1. POST /admin/users — cria o usuário no WuzAPI (admin auth)
+   * 2. POST /session/connect — conecta ao WhatsApp (user auth)
    */
   async createSession(instanceName: string): Promise<{ token: string; qr: string }> {
-    const resp = await fetch(`${WUZAPI_URL}/session/connect`, {
+    const userToken = `saas_${instanceName}_${Date.now()}`;
+
+    // 1. Criar usuário no WuzAPI com admin token
+    const createResp = await fetch(`${WUZAPI_URL}/admin/users`, {
       method: 'POST',
       headers: this.adminHeaders(),
+      body: JSON.stringify({ name: instanceName, token: userToken }),
+    });
+
+    if (!createResp.ok) {
+      const text = await createResp.text();
+      throw new Error(`WuzAPI createUser failed (${createResp.status}): ${text}`);
+    }
+
+    logger.info(`[WuzAPI] Usuário criado: ${instanceName}`);
+
+    // 2. Conectar com o token do usuário
+    const connectResp = await fetch(`${WUZAPI_URL}/session/connect`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'token': userToken,
+      },
       body: JSON.stringify({ name: instanceName }),
     });
 
-    if (!resp.ok) {
-      const text = await resp.text();
-      throw new Error(`WuzAPI createSession failed (${resp.status}): ${text}`);
+    if (!connectResp.ok) {
+      const text = await connectResp.text();
+      throw new Error(`WuzAPI connect failed (${connectResp.status}): ${text}`);
     }
 
-    const data = await resp.json() as { token: string; status: string };
-    logger.info(`[WuzAPI] Sessão criada: ${instanceName} (status: ${data.status})`);
+    const data = await connectResp.json() as { token?: string; status: string };
+    logger.info(`[WuzAPI] Sessão conectando: ${instanceName} (status: ${data.status})`);
+
+    const sessionToken = data.token || userToken;
 
     // Buscar QR code imediatamente
-    const qr = await this.getQRCode(data.token);
+    const qr = await this.getQRCode(sessionToken);
 
-    return { token: data.token, qr };
+    return { token: sessionToken, qr };
   }
 
   /**
