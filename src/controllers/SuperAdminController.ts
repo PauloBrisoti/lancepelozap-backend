@@ -2524,4 +2524,26 @@ export class SuperAdminController {
     });
     return res.json(runs);
   }, "listar execuções da varredura");
+
+  // ── WhatsApp (WuzAPI) ──────────────────────────────────────
+
+  listWhatsAppSessions = asyncHandler(async (_req: Request, res: Response) => {
+    const sessions = await prisma.whatsAppInstance.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: {
+        store: { select: { nomeFantasia: true } },
+      },
+    });
+    return res.json(sessions);
+  }, "listar sessões WhatsApp");
+
+  deleteWhatsAppSession = asyncHandler(async (req: Request, res: Response) => {
+    const id = req.params.id as string;
+    const session = await prisma.whatsAppInstance.findUnique({ where: { id } });
+    if (!session) {
+      return res.status(404).json({ error: 'Sessão não encontrada' });
+    }
+    await prisma.whatsAppInstance.delete({ where: { id } });
+    return res.json({ message: 'Sessão removida' });
+  }, "remover sessão WhatsApp");
 }
