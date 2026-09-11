@@ -129,14 +129,13 @@ class WuzapiService {
       throw new Error(`WuzAPI getQR failed (${resp.status}): ${text}`);
     }
 
-    const data = await resp.json() as { base64?: string; raw?: string };
+    const data = await resp.json() as { base64?: string; raw?: string; QRCode?: string };
 
-    // WuzAPI retorna { base64: "data:image/png;base64,..." }
-    // ou { base64: "iVBOR..." (sem prefixo data:image)
-    if (data.base64) {
-      return data.base64.startsWith('data:')
-        ? data.base64
-        : `data:image/png;base64,${data.base64}`;
+    // WuzAPI pode retornar { base64: "..." } ou { QRCode: "data:image/..." }
+    const qr = data.base64 || data.QRCode;
+
+    if (qr) {
+      return qr.startsWith('data:') ? qr : `data:image/png;base64,${qr}`;
     }
 
     return '';
