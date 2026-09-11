@@ -5,6 +5,7 @@ import { requireCronSecret } from '../middleware/requireCronSecret';
 import { processarCobrancasRecorrentes } from '../services/PetRecorrenciaCron';
 import { processarLembretesHospedagem } from '../services/PetLembretesService';
 import { executarVarreduraAutomatica } from '../services/VarreduraFinanceiraService';
+import { processarReguaCobranca } from '../services/WhatsAppBillingService';
 
 const router = Router();
 
@@ -45,5 +46,8 @@ router.post('/pet-lembretes', wrap(processarLembretesHospedagem));
 
 // POST /api/jobs/varredura-financeira — varredura financeira (cron diário 09:00)
 router.post('/varredura-financeira', wrap(executarVarreduraAutomatica));
+
+// POST /api/jobs/whatsapp-cobranca — régua de cobrança WhatsApp (cron diário 10:00)
+router.post('/whatsapp-cobranca', wrap(processarReguaCobranca));
 
 export { router as jobsRoutes };

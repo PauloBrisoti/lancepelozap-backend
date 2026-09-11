@@ -8,6 +8,7 @@ import cron from "node-cron";
 import { processarCobrancasRecorrentes } from "./services/PetRecorrenciaCron";
 import { processarLembretesHospedagem } from "./services/PetLembretesService";
 import { executarVarreduraAutomatica } from "./services/VarreduraFinanceiraService";
+import { processarReguaCobranca } from "./services/WhatsAppBillingService";
 
 // ----- Handlers globais: falhas de processo NUNCA podem morrer em silêncio.
 // PM2 reinicia o processo; o log `fatal` deixa o rastro e o alerta avisa.
@@ -62,4 +63,9 @@ cron.schedule("0 8 * * *", () => {
 // Varredura Financeira diária às 09:00 (horário de Brasília) — idempotente por dia
 cron.schedule("0 9 * * *", () => {
   executarVarreduraAutomatica();
+}, { timezone: "America/Sao_Paulo" });
+
+// WhatsApp: régua de cobrança diária às 10:00 (horário de Brasília)
+cron.schedule("0 10 * * *", () => {
+  processarReguaCobranca();
 }, { timezone: "America/Sao_Paulo" });

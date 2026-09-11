@@ -492,6 +492,13 @@ export class SaleController {
 
       res.status(201).json(result);
 
+      // WhatsApp: enviar resumo de crediário ao cliente (fire-and-forget)
+      if (formaPagamento === 'CREDIARIO' && customerId) {
+        import('../services/WhatsAppTriggerService').then(m =>
+          m.enviarResumoCrediario(storeId, result.id)
+        ).catch(() => {});
+      }
+
     } catch (error: unknown) {
       logger.error("Erro ao criar venda:", error);
       res.status(400).json({ message: getErrorMessage(error) || "Erro ao processar a venda" });
