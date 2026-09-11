@@ -2527,6 +2527,14 @@ export class SuperAdminController {
 
   // ── WhatsApp (WuzAPI) ──────────────────────────────────────
 
+  listStores = asyncHandler(async (_req: Request, res: Response) => {
+    const stores = await prisma.store.findMany({
+      select: { id: true, nomeFantasia: true },
+      orderBy: { nomeFantasia: 'asc' },
+    });
+    return res.json(stores);
+  }, "listar lojas");
+
   listWhatsAppSessions = asyncHandler(async (_req: Request, res: Response) => {
     const sessions = await prisma.whatsAppInstance.findMany({
       orderBy: { createdAt: 'desc' },
@@ -2536,6 +2544,47 @@ export class SuperAdminController {
     });
     return res.json(sessions);
   }, "listar sessões WhatsApp");
+
+  createWhatsAppSession = asyncHandler(async (req: Request, res: Response) => {
+    const { storeId } = req.body;
+    if (!storeId) {
+      return res.status(400).json({ error: 'storeId é obrigatório' });
+    }
+
+    const store = await prisma.store.findUnique({ where: { id: storeId } });
+    if (!store) {
+      return res.status(404).json({ error: 'Loja não encontrada' });
+    }
+
+    const existing = await prisma.whatsAppInstance.findFirst({
+      where: { storeId, status: 'CONNECTED' },
+    });
+    if (existing) {
+      return res.status(409).json({ error: 'Loja já possui sessão conectada' });
+    }
+
+    const { wuzapiService } = await import('../services/WuzapiService');
+    const name = `store_${storeId}`;
+    const { token, qr } = await wuzapiService.createSession(name);
+
+    const instance = await prisma.whatsAppInstance.create({
+      data: { storeId, instanceName: name, token, status: 'QR_PENDING', phone: '' },
+    });
+
+    return res.status(201).json({ id: instance.id, qrCode: qr, status: 'QR_PENDING' });
+  }, "criar sessão WhatsApp");
+
+  getWhatsAppQR = asyncHandler(async (req: Request, res: Response) => {
+    const id = req.params.id as string;
+    const instance = await prisma.whatsAppInstance.findUnique({ where: { id } });
+    if (!instance) {
+      return res.status(404).json({ error: 'Sessão não encontrada' });
+    }
+
+    const { wuzapiService } = await import('../services/WuzapiService');
+    const qr = await wuzapiService.getQRCode(instance.token);
+    return res.json({ qrCode: qr });
+  }, "obter QR WhatsApp");
 
   deleteWhatsAppSession = asyncHandler(async (req: Request, res: Response) => {
     const id = req.params.id as string;
