@@ -170,8 +170,8 @@ const globalLimiter = rateLimitDistributed({
   keyPrefix: 'global',
   keys: { ip: true },
   limits: [
-    { windowMs: 60 * 1000, max: limitFor(300) },
-    { windowMs: 60 * 60 * 1000, max: limitFor(2000) },
+    { windowMs: 60 * 1000, max: limitFor(600) },
+    { windowMs: 60 * 60 * 1000, max: limitFor(5000) },
   ],
   message: 'Muitas requisições. Tente novamente em instantes.',
   skip: (req) => req.path === '/health' || req.path === '/api/health' || req.path.startsWith('/api/auth'),
