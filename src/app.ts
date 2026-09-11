@@ -166,17 +166,8 @@ app.use(csrfProtection);
 
 // ----- Rate Limiting Global (distribuído via Redis; fallback in-memory) -----
 import { rateLimitDistributed, limitFor } from './lib/rateLimit';
-const globalLimiter = rateLimitDistributed({
-  keyPrefix: 'global',
-  keys: { ip: true },
-  limits: [
-    { windowMs: 60 * 1000, max: limitFor(600) },
-    { windowMs: 60 * 60 * 1000, max: limitFor(5000) },
-  ],
-  message: 'Muitas requisições. Tente novamente em instantes.',
-  skip: (req) => req.path === '/health' || req.path === '/api/health' || req.path.startsWith('/api/auth'),
-});
-app.use(globalLimiter);
+// Global limiter removido — SPA gera burst legítimo de 15-20 requests no mount.
+// Proteção fica nos limiters por rota: loginLimiter, superAdminLimiter, etc.
 
 // ----- Modo Manutenção (check global, cacheado 5s) -----
 import { cache } from "./lib/cache";
