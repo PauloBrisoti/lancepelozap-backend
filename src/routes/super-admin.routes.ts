@@ -174,4 +174,8 @@ router.get('/impersonation-logs', requireInternalPermission('ACESSO_E_LIBERACOES
 router.post('/clients/:id/restore', requireInternalPermission('CLIENTES', 'FULL'), requireScopedClientParam, superAdminController.restoreClient.bind(superAdminController));
 router.post('/clients/:id/purge', requireStrictSuperAdmin, requireInternalPermission('CLIENTES', 'FULL'), requireScopedClientParam, superAdminController.purgeClient.bind(superAdminController));
 
+// WhatsApp (WuzAPI)
+router.get('/whatsapp-sessions', requireInternalPermission('CONFIGURACOES', 'VIEW'), superAdminController.listWhatsAppSessions.bind(superAdminController));
+router.delete('/whatsapp-sessions/:id', requireInternalPermission('CONFIGURACOES', 'FULL'), superAdminController.deleteWhatsAppSession.bind(superAdminController));
+
 export { router as superAdminRoutes };
