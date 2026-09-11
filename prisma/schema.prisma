@@ -310,6 +310,7 @@ model Store {
   inventoryCounts       InventoryCount[]
 
   serviceTypes          ServiceType[]
+  whatsappInstances     WhatsAppInstance[]
   serviceOrders         ServiceOrder[]
   professionals         Professional[]
   appointments          Appointment[]
@@ -1445,4 +1446,25 @@ model PetServiceOrderItem {
 
   @@index([serviceOrderId, catalogItemId])
   @@map("pet_service_order_items")
+}
+
+// ============================================================
+// WhatsApp (WuzAPI) — Sessões por empresa
+// ============================================================
+
+model WhatsAppInstance {
+  id           String   @id @default(cuid())
+  storeId      String   @map("store_id")
+  instanceName String   @map("instance_name")
+  token        String   @db.Text
+  phone        String   @default("")
+  status       String   @default("QR_PENDING") // QR_PENDING | CONNECTED | DISCONNECTED
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId])
+  @@index([status])
+  @@map("whatsapp_instances")
 }
