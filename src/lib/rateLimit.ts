@@ -25,6 +25,7 @@ export interface RateLimitOptions {
   limits: RateLimitWindow[];
   keys: { ip?: boolean; user?: boolean; email?: boolean };
   message?: string;
+  skip?: (req: Request) => boolean;
 }
 
 interface RateLimitStore {
@@ -190,6 +191,8 @@ export function rateLimitDistributed(opts: RateLimitOptions) {
 
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
+      if (opts.skip?.(req)) return next();
+
       const identifiers: string[] = [];
       if (opts.keys.ip) identifiers.push(`ip:${getIp(req)}`);
       if (opts.keys.user) {
