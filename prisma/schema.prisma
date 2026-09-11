@@ -1456,7 +1456,7 @@ model PetServiceOrderItem {
 
 model WhatsAppInstance {
   id           String   @id @default(cuid())
-  storeId      String   @map("store_id")
+  storeId      String?  @map("store_id")
   instanceName String   @map("instance_name")
   token        String   @db.Text
   phone        String   @default("")
@@ -1464,7 +1464,7 @@ model WhatsAppInstance {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  store Store? @relation(fields: [storeId], references: [id], onDelete: Cascade)
 
   @@index([storeId])
   @@index([status])
