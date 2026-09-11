@@ -2547,28 +2547,33 @@ export class SuperAdminController {
 
   createWhatsAppSession = asyncHandler(async (req: Request, res: Response) => {
     const { storeId } = req.body;
-    if (!storeId) {
-      return res.status(400).json({ error: 'storeId é obrigatório' });
-    }
 
-    const store = await prisma.store.findUnique({ where: { id: storeId } });
-    if (!store) {
-      return res.status(404).json({ error: 'Loja não encontrada' });
-    }
+    if (storeId) {
+      const store = await prisma.store.findUnique({ where: { id: storeId } });
+      if (!store) {
+        return res.status(404).json({ error: 'Loja não encontrada' });
+      }
 
-    const existing = await prisma.whatsAppInstance.findFirst({
-      where: { storeId, status: 'CONNECTED' },
-    });
-    if (existing) {
-      return res.status(409).json({ error: 'Loja já possui sessão conectada' });
+      const existing = await prisma.whatsAppInstance.findFirst({
+        where: { storeId, status: 'CONNECTED' },
+      });
+      if (existing) {
+        return res.status(409).json({ error: 'Loja já possui sessão conectada' });
+      }
     }
 
     const { wuzapiService } = await import('../services/WuzapiService');
-    const name = `store_${storeId}`;
+    const name = storeId ? `store_${storeId}` : 'super_admin';
     const { token, qr } = await wuzapiService.createSession(name);
 
     const instance = await prisma.whatsAppInstance.create({
-      data: { storeId, instanceName: name, token, status: 'QR_PENDING', phone: '' },
+      data: {
+        storeId: storeId || null,
+        instanceName: name,
+        token,
+        status: 'QR_PENDING',
+        phone: '',
+      },
     });
 
     return res.status(201).json({ id: instance.id, qrCode: qr, status: 'QR_PENDING' });
