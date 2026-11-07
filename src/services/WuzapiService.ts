@@ -214,13 +214,17 @@ class WuzapiService {
     const phoneClean = phone.replace(/\D/g, '');
     const phoneFormatted = phoneClean.startsWith('55') ? phoneClean : `55${phoneClean}`;
 
+    const payload = JSON.stringify({
+      Phone: phoneFormatted,
+      Body: message,
+    });
+
+    logger.info(`[WuzAPI] sendText payload: ${payload}`);
+
     const resp = await fetch(`${WUZAPI_URL}/chat/send/text`, {
       method: 'POST',
       headers: this.userHeaders(sessionToken),
-      body: JSON.stringify({
-        phone: phoneFormatted,
-        message,
-      }),
+      body: payload,
     });
 
     if (!resp.ok) {
@@ -248,9 +252,9 @@ class WuzapiService {
       method: 'POST',
       headers: this.userHeaders(sessionToken),
       body: JSON.stringify({
-        phone: phoneFormatted,
-        image: imageUrl,
-        caption: caption || '',
+        Phone: phoneFormatted,
+        Image: imageUrl,
+        Caption: caption || '',
       }),
     });
 

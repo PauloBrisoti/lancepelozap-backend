@@ -138,3 +138,34 @@ export async function sendNewTicketNotification(storeName: string, subject: stri
     </div>`
   );
 }
+
+/**
+ * Envia email de convite para membro da equipe interna.
+ * O convidado recebe um link para definir sua senha e ativar a conta.
+ */
+export async function sendTeamInvite(
+  email: string,
+  nome: string,
+  roleDescription: string,
+  inviteLink: string
+): Promise<boolean> {
+  const nomeSeguro = escapeHtml(nome);
+  const roleSeguro = escapeHtml(roleDescription);
+  const link = escapeHtml(inviteLink);
+  return sendEmail(
+    email,
+    'Convite para Equipe - Lance Pelo Zap',
+    `<div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px">
+      <h2 style="color:#059669">Bem-vindo à Equipe!</h2>
+      <p>Olá, <strong>${nomeSeguro}</strong>!</p>
+      <p>Você foi convidado(a) para fazer parte da equipe do <strong>Lance Pelo Zap</strong>.</p>
+      <p><strong>Seu papel:</strong> ${roleSeguro}</p>
+      <p>Para ativar sua conta e definir sua senha, clique no botão abaixo:</p>
+      <a href="${link}" style="display:inline-block;background:#059669;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;margin:16px 0">
+        Aceitar Convite e Definir Senha
+      </a>
+      <p style="color:#6b7280;font-size:12px">Se não foi você, ignore este email.</p>
+      <p style="color:#6b7280;font-size:12px">Este link expira em 7 dias.</p>
+    </div>`
+  );
+}

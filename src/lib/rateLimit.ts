@@ -191,6 +191,10 @@ export function rateLimitDistributed(opts: RateLimitOptions) {
 
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
+      // Nunca contabilizar pre-flight CORS (OPTIONS) — o navegador dispara
+      // OPTIONS antes de cada requisição cross-origin; se forem contabilizadas,
+      // a carga real do SPA é ~2x (ex.: 10 requests → 10 OPTIONS + 10 GET/POST).
+      if (req.method === 'OPTIONS') return next();
       if (opts.skip?.(req)) return next();
 
       const identifiers: string[] = [];
@@ -225,6 +229,7 @@ export function rateLimitDistributed(opts: RateLimitOptions) {
 
       if (limited) {
         const retryAfterSec = Math.max(1, Math.ceil(retryAfterMs / 1000));
+        logger.warn(`[rate-limit] BLOQUEADO ${req.method} ${req.path} | prefix=${opts.keyPrefix} ids=${identifiers.join(',')} retry=${retryAfterSec}s ip=${getIp(req)}`);
         res.set('Retry-After', String(retryAfterSec));
         res.set('X-RateLimit-Limit', String(limitHit));
         res.set('X-RateLimit-Remaining', '0');

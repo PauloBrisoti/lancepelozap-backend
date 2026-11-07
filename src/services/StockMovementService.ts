@@ -57,13 +57,32 @@ export class StockMovementService {
    * o produto não existe e `skipSeProdutoInexistente` é true.
    */
   static async movimentar(tx: Prisma.TransactionClient, params: MovimentarParams) {
+    // 1. Bloqueio pessimista via FOR UPDATE para serializar requisições concorrentes
+    const lockedRows = await tx.$queryRaw<Array<{
+      id: string;
+      qtd_estoque_atual: any;
+      nome: string;
+      store_id: string;
+    }>>`
+      SELECT id, qtd_estoque_atual, nome, store_id
+      FROM products
+      WHERE id = ${params.productId}
+      FOR UPDATE
+    `;
+
+    const productRow = lockedRows[0];
+    if (!productRow) {
+      if (params.skipSeProdutoInexistente) return undefined;
+      throw new Error(`Produto não encontrado: ${params.productId}`);
+    }
+
     const product = await tx.product.findUnique({ where: { id: params.productId } });
     if (!product) {
       if (params.skipSeProdutoInexistente) return undefined;
       throw new Error(`Produto não encontrado: ${params.productId}`);
     }
 
-    const saldoAnterior = Number(product.qtdEstoqueAtual);
+    const saldoAnterior = Number(productRow.qtd_estoque_atual);
     const incrementa = params.tipo === 'ENTRADA' || params.tipo === 'TRANSFERENCIA_DESTINO';
     const decrementa = params.tipo === 'SAIDA' || params.tipo === 'TRANSFERENCIA_ORIGEM';
     const delta = incrementa
@@ -77,7 +96,7 @@ export class StockMovementService {
       (params.tipo !== 'SAIDA' && params.tipo !== 'TRANSFERENCIA_ORIGEM');
 
     if (!permiteNegativo && saldoPosterior < 0) {
-      throw new Error(`Estoque insuficiente de ${product.nome}: disponível ${saldoAnterior}, enviando ${Math.abs(delta)}`);
+      throw new Error(`Estoque insuficiente de ${productRow.nome}: disponível ${saldoAnterior}, enviando ${Math.abs(delta)}`);
     }
 
     await tx.product.update({

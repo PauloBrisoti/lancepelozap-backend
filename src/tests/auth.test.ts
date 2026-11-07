@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { createClientWithStore } from './factory';
+import { limitFor } from '../lib/rateLimit';
 
 describe('Autenticação e 2FA', () => {
   let clientA: any;
@@ -21,8 +22,10 @@ describe('Autenticação e 2FA', () => {
 
   it('Bloqueio por força bruta (Rate limit) no login', async () => {
     let res: any;
-    // Rate limit é max=100 em modo teste; precisa de 101 tentativas para estourar
-    for (let i = 0; i < 101; i++) {
+    // Limite real da janela de 1 minuto é limitFor(30) (×5 em modo teste):
+    // estoura com uma tentativa acima desse valor.
+    const tentativas = limitFor(30) + 1;
+    for (let i = 0; i < tentativas; i++) {
       res = await request(app)
         .post('/api/auth/login')
         .send({ email: clientA.user.email, password: 'wrongpassword' });

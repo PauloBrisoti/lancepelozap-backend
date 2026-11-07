@@ -1,7 +1,7 @@
 import { getErrorMessage } from '../lib/errors';
 import { Request, Response } from "express";
 import { logger } from '../lib/logger';
-import { asyncHandler } from "../lib/asyncHandler";
+import { asyncHandler, HttpError } from "../lib/asyncHandler";
 import { randomUUID } from "crypto";
 import jwt from "jsonwebtoken";
 import { prisma } from "../lib/prisma";
@@ -10,6 +10,13 @@ import { FeeCalculationService } from "../services/FeeCalculationService";
 import { comparePassword } from "../utils/password";
 import { buildDateRange, parseDate } from "../lib/dateUtils";
 import { CATEGORIA_CANCELAMENTO } from "../lib/categorias";
+import { PeriodCloseService } from "../services/PeriodCloseService";
+import { AccountingService } from "../services/AccountingService";
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const overdueToleranceRaw = Number(process.env.CREDIT_OVERDUE_TOLERANCE_DAYS ?? 30);
+const CREDIT_OVERDUE_TOLERANCE_DAYS =
+  Number.isFinite(overdueToleranceRaw) && overdueToleranceRaw >= 0 ? overdueToleranceRaw : 30;
 
 export class SaleController {
   summary = asyncHandler(async (req: Request, res: Response) => {
@@ -36,6 +43,7 @@ export class SaleController {
         where: {
           storeId,
           status: { not: 'CANCELADA' },
+          deletedAt: null,
           dataVenda: { gte: firstDay, lte: lastDay },
           ...(restricted ? { userId: requesterId! } : {}),
         },
@@ -89,6 +97,7 @@ export class SaleController {
       }
 
       whereClause.status = { not: 'CANCELADA' };
+      whereClause.deletedAt = null;
 
       const sales = await prisma.sale.findMany({
         where: whereClause,
@@ -199,14 +208,93 @@ export class SaleController {
         return res.status(400).json({ message: "Cliente é obrigatório para vendas no Crediário" });
       }
 
-      // OWNERSHIP: cliente informado precisa pertencer a ESTA loja
+      // OWNERSHIP & GOVERNANÇA DE CRÉDITO
       if (customerId) {
         const ownedCustomer = await prisma.customer.findFirst({
           where: { id: customerId, storeId },
-          select: { id: true },
+          select: { id: true, nomeCompleto: true, limiteCredito: true, bloqueadoFiado: true, motivoBloqueioFiado: true },
         });
         if (!ownedCustomer) {
           return res.status(400).json({ message: "Cliente não encontrado nesta loja" });
+        }
+
+        if (formaPagamento === 'CREDIARIO') {
+          if (ownedCustomer.bloqueadoFiado) {
+            return res.status(409).json({
+              message: `Cliente com crediário bloqueado: ${ownedCustomer.motivoBloqueioFiado || 'Restrição cadastral ativa'}`,
+            });
+          }
+
+          // Saldo devedor real: valor da parcela menos pagamentos ativos (parciais)
+          const openReceivables = await prisma.accountReceivable.findMany({
+            where: {
+              storeId,
+              customerId: ownedCustomer.id,
+              status: { in: ['PENDENTE', 'PAGO_PARCIAL'] },
+            },
+            select: {
+              valorParcela: true,
+              dataVencimento: true,
+              payments: {
+                where: { tipo: 'ENTRADA', status: 'ATIVA' },
+                select: { valor: true },
+              },
+            },
+          });
+
+          const saldoDevedor = (receivable: { valorParcela: unknown; payments: { valor: unknown }[] }) =>
+            Math.max(
+              0,
+              Number(receivable.valorParcela) -
+                receivable.payments.reduce((sum, payment) => sum + Number(payment.valor), 0)
+            );
+
+          const hoje = new Date();
+          const vencimentoLimite = new Date(hoje.getTime() - CREDIT_OVERDUE_TOLERANCE_DAYS * MS_PER_DAY);
+
+          const vencidas = openReceivables.filter(
+            (receivable) =>
+              new Date(receivable.dataVencimento).getTime() < vencimentoLimite.getTime() &&
+              saldoDevedor(receivable) > 0
+          );
+
+          if (vencidas.length > 0) {
+            const totalVencido = vencidas.reduce((acc, receivable) => acc + saldoDevedor(receivable), 0);
+            const diasMaisAntiga = Math.max(
+              ...vencidas.map((receivable) =>
+                Math.floor(
+                  (hoje.getTime() - new Date(receivable.dataVencimento).getTime()) / MS_PER_DAY
+                )
+              )
+            );
+
+            return res.status(409).json({
+              message:
+                `Cliente inadimplente: ${vencidas.length} parcela(s) vencida(s) há mais de ` +
+                `${CREDIT_OVERDUE_TOLERANCE_DAYS} dias (mais antiga há ${diasMaisAntiga} dias), ` +
+                `total vencido: R$ ${totalVencido.toFixed(2)}. Venda no crediário bloqueada.`,
+            });
+          }
+
+          const totalDevendo = openReceivables.reduce(
+            (acc, receivable) => acc + saldoDevedor(receivable),
+            0
+          );
+
+          const limite = Number(ownedCustomer.limiteCredito || 0);
+          if (limite > 0) {
+            const valorSinalNum = Number(valorSinal || 0);
+            const valorAPrazoEstimado = itens.reduce(
+              (acc: number, it: any) => acc + Number(it.quantidade) * Number(it.precoUnitarioVendido),
+              0
+            ) - Number(valorDesconto || 0) - valorSinalNum;
+
+            if (totalDevendo + valorAPrazoEstimado > limite) {
+              return res.status(400).json({
+                message: `Limite de crédito excedido. Limite: R$ ${limite.toFixed(2)}, em aberto: R$ ${totalDevendo.toFixed(2)}, novo saldo solicitado: R$ ${(totalDevendo + valorAPrazoEstimado).toFixed(2)}`,
+              });
+            }
+          }
         }
       }
 
@@ -239,6 +327,9 @@ export class SaleController {
       // Resolve sale date: use client-provided or current timestamp
       const saleDate = parseDate(dataVenda) ?? new Date();
 
+      // Validação de Fechamento de Período Contábil
+      await PeriodCloseService.assertPeriodIsOpen(storeId, saleDate, undefined, 'nova venda');
+
       // Extract the original day from the raw date string for installment calculation
       const originalDay = dataVenda ? parseInt(dataVenda.split('T')[0].split('-')[2], 10) : saleDate.getUTCDate();
 
@@ -248,6 +339,17 @@ export class SaleController {
         let cmvTotal = 0;
         const saleItemsData: any[] = [];
         const stockMovementsData: any[] = [];
+
+        // 1.1 Bloqueio pessimista (FOR UPDATE) ordenado deterministicamente para serializar
+        // requisições concorrentes e prevenir deadlocks entre transações de PDV
+        const productIdsToLock = [...new Set(itens.map((i: any) => String(i.productId)))].sort();
+        for (const prodId of productIdsToLock) {
+          await tx.$executeRaw`
+            SELECT id FROM products
+            WHERE id = ${prodId} AND store_id = ${storeId}
+            FOR UPDATE
+          `;
+        }
 
         // 2. Fetch products and calculate values
         for (const item of itens) {
@@ -264,6 +366,10 @@ export class SaleController {
           const subtotal = Math.round(qte * preco * 100) / 100;
           const qtdAnterior = Number(product.qtdEstoqueAtual);
           
+          if (qtdAnterior < qte) {
+            throw new Error(`Estoque insuficiente de ${product.nome}: disponível ${qtdAnterior}, solicitado ${qte}`);
+          }
+
           valorTotalBruto += subtotal;
 
           // CMV: usa custo real do produto, ou fallback de 70% do preço de venda
@@ -487,6 +593,24 @@ export class SaleController {
           });
         }
 
+        // 6. Automação Contábil — Escrituração em Partidas Dobradas
+        try {
+          await AccountingService.recordSaleAutomation(tx, {
+            storeId,
+            saleId: sale.id,
+            dataVenda: saleDate,
+            valorTotalBruto: Number(sale.valorTotalBruto),
+            valorDesconto: Number(sale.valorDesconto),
+            valorTaxasGateway: Number(sale.valorTaxasGateway),
+            valorTotalLiquido: Number(sale.valorTotalLiquido),
+            cmvTotal: Number(sale.cmvTotal),
+            formaPagamento: sale.formaPagamento,
+            userId,
+          });
+        } catch (accErr) {
+          logger.warn(`[Accounting] Aviso ao registrar partidas dobradas da venda ${sale.id}: ${getErrorMessage(accErr)}`);
+        }
+
         return sale;
       });
 
@@ -501,7 +625,8 @@ export class SaleController {
 
     } catch (error: unknown) {
       logger.error("Erro ao criar venda:", error);
-      res.status(400).json({ message: getErrorMessage(error) || "Erro ao processar a venda" });
+      const status = error instanceof HttpError ? error.statusCode : 400;
+      res.status(status).json({ message: getErrorMessage(error) || "Erro ao processar a venda" });
     }
   }
 
@@ -514,12 +639,22 @@ export class SaleController {
       const { customerId, formaPagamento, valorDesconto, valorSinal, numeroParcelas, observacoes, dataVenda } = req.body;
 
       const sale = await prisma.sale.findFirst({
-        where: { id, storeId },
+        where: { id, storeId, deletedAt: null },
         include: { receivables: { where: { status: { not: 'CANCELADA' } } }, financialTransactions: true }
       });
 
       if (!sale) return res.status(404).json({ message: "Venda não encontrada" });
+
       if (sale.status === 'CANCELADA') return res.status(400).json({ message: "Venda cancelada não pode ser editada" });
+
+      // Governança Contábil: impede edição de vendas de períodos contábeis já fechados
+      await PeriodCloseService.assertPeriodIsOpen(storeId, sale.dataVenda, undefined, 'edição de venda');
+
+      // Também impede mover a venda para dentro de um período já fechado
+      const novaDataVenda = dataVenda !== undefined && dataVenda !== null ? parseDate(dataVenda) : null;
+      if (novaDataVenda) {
+        await PeriodCloseService.assertPeriodIsOpen(storeId, novaDataVenda, undefined, 'edição de venda');
+      }
 
       // OWNERSHIP: cliente informado precisa pertencer a ESTA loja
       if (req.body.customerId) {
@@ -762,7 +897,8 @@ export class SaleController {
       res.json({ message: "Venda atualizada com sucesso", sale: updated });
     } catch (error: unknown) {
       logger.error("Erro ao atualizar venda:", error);
-      res.status(500).json({ message: getErrorMessage(error) || "Erro ao atualizar venda" });
+      const status = error instanceof HttpError ? error.statusCode : 500;
+      res.status(status).json({ message: getErrorMessage(error) || "Erro ao atualizar venda" });
     }
   }
 async cancel(req: Request, res: Response) {
@@ -775,7 +911,7 @@ async cancel(req: Request, res: Response) {
       const { id } = req.params;
 
       const sale = await prisma.sale.findFirst({
-        where: { id: String(id), storeId },
+        where: { id: String(id), storeId, deletedAt: null },
         include: {
           saleItems: true,
           receivables: true,
@@ -790,6 +926,9 @@ async cancel(req: Request, res: Response) {
       if (sale.status === 'CANCELADA') {
         return res.status(400).json({ message: "Venda já está cancelada" });
       }
+
+      // Governança Contábil: impede cancelamento em período fechado
+      await PeriodCloseService.assertPeriodIsOpen(storeId, sale.dataVenda, undefined, 'cancelamento de venda');
 
       // VENDEDOR/CAIXA só cancela as próprias vendas
       const requesterId = req.user?.id;
@@ -880,7 +1019,8 @@ async cancel(req: Request, res: Response) {
       res.json({ message: "Venda cancelada com sucesso", sale: result });
     } catch (error: unknown) {
       logger.error("Erro ao cancelar venda:", error);
-      res.status(500).json({ message: "Erro interno do servidor", detail: getErrorMessage(error) });
+      const status = error instanceof HttpError ? error.statusCode : 500;
+      res.status(status).json({ message: getErrorMessage(error) || "Erro interno do servidor", detail: getErrorMessage(error) });
     }
   }
 
@@ -899,7 +1039,7 @@ async cancel(req: Request, res: Response) {
       }
 
       const sale = await prisma.sale.findFirst({
-        where: { id: String(id), storeId },
+        where: { id: String(id), storeId, deletedAt: null },
       });
       if (!sale) {
         return res.status(404).json({ message: "Venda não encontrada" });
@@ -907,6 +1047,9 @@ async cancel(req: Request, res: Response) {
       if (sale.status === 'CANCELADA') {
         return res.status(400).json({ message: "Venda já está cancelada" });
       }
+
+      // Governança Contábil: impede cancelamento em período fechado
+      await PeriodCloseService.assertPeriodIsOpen(storeId, sale.dataVenda, undefined, 'cancelamento de venda');
 
       // Token de uso único (válido por 2 minutos) para confirmar a exclusão
       const jti = randomUUID();
@@ -918,7 +1061,8 @@ async cancel(req: Request, res: Response) {
       res.json({ token, expiresIn: 120 });
     } catch (error: unknown) {
       logger.error("Erro ao gerar token de exclusão:", error);
-      res.status(500).json({ message: "Erro interno do servidor", detail: getErrorMessage(error) });
+      const status = error instanceof HttpError ? error.statusCode : 500;
+      res.status(status).json({ message: getErrorMessage(error) || "Erro interno do servidor", detail: getErrorMessage(error) });
     }
   }
 
@@ -959,7 +1103,7 @@ async cancel(req: Request, res: Response) {
       }
 
       const sale = await prisma.sale.findFirst({
-        where: { id: String(id), storeId },
+        where: { id: String(id), storeId, deletedAt: null },
         include: {
           saleItems: true,
           receivables: true,
@@ -968,6 +1112,9 @@ async cancel(req: Request, res: Response) {
         },
       });
       if (!sale) return res.status(404).json({ message: "Venda não encontrada" });
+
+      // Governança Contábil: impede exclusão em período contábil fechado
+      await PeriodCloseService.assertPeriodIsOpen(storeId, sale.dataVenda, undefined, 'exclusão de venda');
 
       await prisma.$transaction(async (tx) => {
         // 1. Revert stock
@@ -1022,25 +1169,23 @@ async cancel(req: Request, res: Response) {
           }
         }
 
-        // 4. Delete product returns linked to this sale
-        if (sale.productReturns.length > 0) {
-          for (const pr of sale.productReturns) {
-            await tx.productReturnItem.deleteMany({ where: { productReturnId: pr.id } });
-          }
-          await tx.productReturn.deleteMany({ where: { saleId: sale.id } });
-        }
-
-        // 5. Delete sale items (cascaded, but explicit for safety)
-        await tx.saleItem.deleteMany({ where: { saleId: sale.id } });
-
-        // 6. Delete sale
-        await tx.sale.delete({ where: { id: sale.id } });
+        // 4. Soft delete em vez de delete físico (CTN art. 195: guarda de 5 anos)
+        // Mantemos os itens e retornos vinculados para fins de auditoria fiscal e rastreabilidade
+        await tx.sale.update({
+          where: { id: sale.id },
+          data: {
+            deletedAt: new Date(),
+            deletedBy: req.user!.id,
+            status: 'CANCELADA',
+          },
+        });
       });
 
-      res.json({ message: "Venda excluída permanentemente" });
+      res.json({ message: "Venda excluída com sucesso" });
     } catch (error: unknown) {
       logger.error("Erro ao excluir venda:", error);
-      res.status(500).json({ message: "Erro interno do servidor", detail: getErrorMessage(error) });
+      const status = error instanceof HttpError ? error.statusCode : 500;
+      res.status(status).json({ message: getErrorMessage(error) || "Erro interno do servidor", detail: getErrorMessage(error) });
     }
   }
 }

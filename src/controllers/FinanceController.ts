@@ -6,42 +6,89 @@ import { toZonedTime, fromZonedTime } from 'date-fns-tz';
 import { asyncHandler } from "../lib/asyncHandler";
 import { StockMovementService } from '../services/StockMovementService';
 import { CATEGORIA_VENDAS, normalizarCategoria } from '../lib/categorias';
+import { PeriodCloseService } from '../services/PeriodCloseService';
 
-async function deleteSaleTree(tx: any, sale: { id: string; saleItems: { id: string; productId: string; quantidade: any }[] }, storeId: string, userId: string) {
+/**
+ * Soft-delete de uma venda e estorno de seus efeitos colaterais.
+ *
+ * NUNCA apaga fisicamente registros de venda — conformidade fiscal exige
+ * retenção por 5 anos (CTN art. 195). O registro permanece com deletedAt
+ * preenchido e é invisível para todas as queries de negócio.
+ *
+ * Efeitos realizados:
+ *  1. Estorna estoque de cada item (movimentação de ENTRADA)
+ *  2. Estorna saldo das wallets dos pagamentos já realizados
+ *  3. Soft-deleta FinancialTransactions vinculadas (status = 'CANCELADA')
+ *  4. Cancela AccountReceivables vinculadas
+ *  5. Soft-deleta a própria Sale (deletedAt = now())
+ *
+ * ProductReturns NÃO são removidos — são documentos fiscais independentes.
+ */
+async function deleteSaleTree(
+  tx: any,
+  sale: { id: string; dataVenda: Date; saleItems: { id: string; productId: string; quantidade: any }[] },
+  storeId: string,
+  userId: string,
+) {
+  await PeriodCloseService.assertPeriodIsOpen(storeId, sale.dataVenda, tx, 'exclusão de venda');
+
+  const now = new Date();
+
+  // 1. Estornar estoque de cada item vendido
   for (const item of sale.saleItems) {
     await StockMovementService.movimentar(tx, {
-      storeId, productId: item.productId, userId,
+      storeId,
+      productId: item.productId,
+      userId,
       tipo: 'ENTRADA',
       quantidade: Number(item.quantidade),
       referenciaId: sale.id,
-      observacao: 'Estorno exclusão de venda',
+      observacao: 'Estorno — venda excluída (soft delete)',
     });
   }
 
-  const returns = await tx.productReturn.findMany({ where: { saleId: sale.id }, select: { id: true } });
-  if (returns.length > 0) {
-    await tx.productReturn.deleteMany({ where: { id: { in: returns.map((r: any) => r.id) } } });
-  }
-
-  // Delete all receivables of this sale + their payments, with wallet estorno
+  // 2. Estornar pagamentos já realizados nas wallets + cancelar as transações
   const recs = await tx.accountReceivable.findMany({
     where: { saleId: sale.id },
     include: { payments: { select: { id: true, walletId: true, tipo: true, valor: true } } },
   });
+
   for (const rec of recs) {
     for (const payment of rec.payments) {
+      // Reverter o impacto no saldo da wallet
       if (payment.tipo === 'ENTRADA') {
-        await tx.wallet.update({ where: { id: payment.walletId }, data: { saldoAtual: { decrement: Number(payment.valor) } } });
+        await tx.wallet.update({
+          where: { id: payment.walletId },
+          data: { saldoAtual: { decrement: Number(payment.valor) } },
+        });
       } else if (payment.tipo === 'SAIDA') {
-        await tx.wallet.update({ where: { id: payment.walletId }, data: { saldoAtual: { increment: Number(payment.valor) } } });
+        await tx.wallet.update({
+          where: { id: payment.walletId },
+          data: { saldoAtual: { increment: Number(payment.valor) } },
+        });
       }
-      await tx.financialTransaction.delete({ where: { id: payment.id } });
+      // Soft-delete da FinancialTransaction: status CANCELADA preserva o registro
+      await tx.financialTransaction.update({
+        where: { id: payment.id },
+        data: { status: 'CANCELADA' },
+      });
     }
-    await tx.accountReceivable.delete({ where: { id: rec.id } });
+    // Cancelar o AccountReceivable (não deletar — mantém histórico do crediário)
+    await tx.accountReceivable.update({
+      where: { id: rec.id },
+      data: { status: 'CANCELADA' },
+    });
   }
 
-  await tx.saleItem.deleteMany({ where: { saleId: sale.id } });
-  await tx.sale.delete({ where: { id: sale.id } });
+  // 3. Soft-delete da venda — NUNCA deletar fisicamente
+  await tx.sale.update({
+    where: { id: sale.id },
+    data: {
+      deletedAt: now,
+      deletedBy: userId,
+      status: 'CANCELADA',
+    },
+  });
 }
 
 export class FinanceController {
@@ -81,6 +128,20 @@ export class FinanceController {
       return res.status(201).json(category);
     
   }, "criar categoria");
+
+  static listWallets = asyncHandler(async (req: Request, res: Response) => {
+      const storeId = req.user?.storeId as string;
+      if (!storeId) return res.status(401).json({ message: 'Não autorizado' });
+
+      const wallets = await prisma.wallet.findMany({
+        where: { storeId },
+        orderBy: { nome: 'asc' },
+        select: { id: true, nome: true, tipo: true, saldoAtual: true },
+      });
+
+      return res.json(wallets);
+    
+  }, "listar carteiras");
 
   // 1. DASHBOARD E SALDOS
   static getDashboard = asyncHandler(async (req: Request, res: Response) => {
@@ -308,6 +369,9 @@ export class FinanceController {
       const valorNum = Number(valor);
       const dtTransacao = dataTransacao ? new Date(dataTransacao) : new Date();
 
+      // Governança Contábil: impede lançamentos em períodos fechados
+      await PeriodCloseService.assertPeriodIsOpen(storeId, dtTransacao, undefined, 'lançamento financeiro');
+
       const transaction = await prisma.$transaction(async (tx) => {
         
         if (isParcelado === 'true') {
@@ -453,7 +517,14 @@ export class FinanceController {
         return res.status(404).json({ message: 'Transação não encontrada' });
       }
 
+      // Governança Contábil: impede alteração em período fechado
+      await PeriodCloseService.assertPeriodIsOpen(storeId, oldTx.dataTransacao, undefined, 'edição de transação');
+
       const valorNum = Number(valor);
+      const novaDataTransacao = dataTransacao ? parseDate(dataTransacao) : null;
+      if (novaDataTransacao) {
+        await PeriodCloseService.assertPeriodIsOpen(storeId, novaDataTransacao, undefined, 'edição de transação');
+      }
 
       const transaction = await prisma.$transaction(async (tx) => {
         // Reverter impacto da transação antiga na carteira
@@ -466,7 +537,7 @@ export class FinanceController {
           }
         });
 
-        const dtTransacao = dataTransacao ? parseDate(dataTransacao) : undefined;
+        const dtTransacao = novaDataTransacao ?? undefined;
 
         // Atualizar transação
         const updatedTx = await tx.financialTransaction.update({
@@ -582,6 +653,9 @@ export class FinanceController {
       
       const id = req.params.id as string;
       let { walletId, valorPago } = req.body;
+
+      // Governança Contábil: impede baixa em período fechado
+      await PeriodCloseService.assertPeriodIsOpen(storeId, new Date(), undefined, 'baixa de conta a receber');
 
       if (!walletId) {
         const wallet = await prisma.wallet.findFirst({ where: { storeId } });
@@ -724,6 +798,14 @@ export class FinanceController {
       const numParcelas = Number(novasParcelas) || 1;
       const valorParcela = Math.round((Number(novoValor) / numParcelas) * 100) / 100;
 
+      // Governança Contábil: não permite mutar parcela nem criar vencimentos em período fechado
+      await PeriodCloseService.assertPeriodIsOpen(storeId, new Date(), undefined, 'renegociação de conta a receber');
+      await PeriodCloseService.assertPeriodIsOpen(storeId, receivable.dataVencimento, undefined, 'renegociação de conta a receber');
+      const vencimentoBase = new Date(novaDataVencimento);
+      if (!isNaN(vencimentoBase.getTime())) {
+        await PeriodCloseService.assertPeriodIsOpen(storeId, vencimentoBase, undefined, 'renegociação de conta a receber');
+      }
+
       const result = await prisma.$transaction(async (tx) => {
         // Cancel current receivable
         await tx.accountReceivable.update({
@@ -792,6 +874,17 @@ export class FinanceController {
 
       if (!descricao || !dataVencimento || !valor) {
         return res.status(400).json({ message: 'Campos obrigatórios: descricao, dataVencimento, valor' });
+      }
+
+      // Governança Contábil: impede lançar conta a pagar em período fechado
+      await PeriodCloseService.assertPeriodIsOpen(
+        storeId,
+        parseDate(dataVencimento) || new Date(dataVencimento),
+        undefined,
+        'criação de conta a pagar'
+      );
+      if (isFirstPaid) {
+        await PeriodCloseService.assertPeriodIsOpen(storeId, new Date(), undefined, 'criação de conta a pagar');
       }
 
       const valorNum = Number(valor);
@@ -872,6 +965,13 @@ export class FinanceController {
         return res.status(404).json({ message: 'Conta a pagar não encontrada' });
       }
 
+      // Governança Contábil: impede edição em período fechado (atual e novo vencimento)
+      await PeriodCloseService.assertPeriodIsOpen(storeId, payable.dataVencimento, undefined, 'edição de conta a pagar');
+      const novaDataVencimento = dataVencimento !== undefined ? parseDate(dataVencimento) : null;
+      if (novaDataVencimento) {
+        await PeriodCloseService.assertPeriodIsOpen(storeId, novaDataVencimento, undefined, 'edição de conta a pagar');
+      }
+
       const updated = await prisma.accountPayable.update({
         where: { id },
         data: {
@@ -879,7 +979,7 @@ export class FinanceController {
           categoria: categoria !== undefined ? categoria : undefined,
           fornecedor: fornecedor !== undefined ? fornecedor : undefined,
           supplierId: supplierId !== undefined ? (supplierId || null) : undefined,
-          dataVencimento: dataVencimento !== undefined ? (parseDate(dataVencimento) ?? undefined) : undefined,
+          dataVencimento: dataVencimento !== undefined ? (novaDataVencimento ?? undefined) : undefined,
           valor: valor !== undefined ? Number(valor) : undefined,
         },
       });
@@ -894,6 +994,9 @@ export class FinanceController {
 
       const id = req.params.id as string;
       const { walletId } = req.body;
+
+      // Governança Contábil: impede baixa em período fechado
+      await PeriodCloseService.assertPeriodIsOpen(storeId, new Date(), undefined, 'baixa de conta a pagar');
 
       if (!walletId) {
         return res.status(400).json({ message: 'Selecione uma carteira para realizar o pagamento.' });
@@ -953,19 +1056,24 @@ export class FinanceController {
           const processedSaleIds = new Set<string>();
 
           if (entityType === 'TRANSACTION') {
+            // TRANSACTION bulk delete: estornar wallets e soft-deletar
             const txs = await tx.financialTransaction.findMany({
-              where: { id: { in: ids }, storeId },
+              where: { id: { in: ids }, storeId, status: { not: 'CANCELADA' } },
             });
             for (const t of txs) {
+              await PeriodCloseService.assertPeriodIsOpen(storeId, t.dataTransacao, tx, 'exclusão de transação');
+
+              // Reverter impacto no saldo
               if (t.tipo === 'ENTRADA') {
                 await tx.wallet.update({ where: { id: t.walletId }, data: { saldoAtual: { decrement: Number(t.valor) } } });
               } else if (t.tipo === 'SAIDA') {
                 await tx.wallet.update({ where: { id: t.walletId }, data: { saldoAtual: { increment: Number(t.valor) } } });
               }
+              // Venda vinculada → soft-delete via deleteSaleTree (que já cuida de tudo)
               if (t.saleId && !processedSaleIds.has(t.saleId)) {
                 processedSaleIds.add(t.saleId);
                 const sale = await tx.sale.findUnique({
-                  where: { id: t.saleId },
+                  where: { id: t.saleId, deletedAt: null },
                   include: { saleItems: true },
                 });
                 if (sale) {
@@ -973,23 +1081,31 @@ export class FinanceController {
                 }
               }
             }
-            await tx.financialTransaction.deleteMany({ where: { id: { in: ids }, storeId } });
+            // Soft-delete das transações avulsas (sem saleId vinculado já processado)
+            await tx.financialTransaction.updateMany({
+              where: { id: { in: ids }, storeId, saleId: null },
+              data: { status: 'CANCELADA' },
+            });
           } else if (entityType === 'RECEIVABLE') {
             const recs = await tx.accountReceivable.findMany({
               where: { id: { in: ids }, storeId },
               include: { payments: { select: { id: true, walletId: true, tipo: true, valor: true } } },
             });
             for (const rec of recs) {
+              await PeriodCloseService.assertPeriodIsOpen(storeId, rec.dataVencimento, tx, 'exclusão de conta a receber');
+
+              // Receivable ligada a uma venda → delegar ao deleteSaleTree
               if (rec.saleId && !processedSaleIds.has(rec.saleId)) {
                 processedSaleIds.add(rec.saleId);
                 const sale = await tx.sale.findUnique({
-                  where: { id: rec.saleId },
+                  where: { id: rec.saleId, deletedAt: null },
                   include: { saleItems: true },
                 });
                 if (sale) {
                   await deleteSaleTree(tx, sale, storeId, userId);
                 }
               }
+              // Receivable manual (sem venda): estornar pagamentos e cancelar
               if (!rec.saleId) {
                 for (const payment of rec.payments) {
                   if (payment.tipo === 'ENTRADA') {
@@ -997,18 +1113,36 @@ export class FinanceController {
                   } else if (payment.tipo === 'SAIDA') {
                     await tx.wallet.update({ where: { id: payment.walletId }, data: { saldoAtual: { increment: Number(payment.valor) } } });
                   }
-                  await tx.financialTransaction.delete({ where: { id: payment.id } });
+                  await tx.financialTransaction.update({
+                    where: { id: payment.id },
+                    data: { status: 'CANCELADA' },
+                  });
                 }
+                await tx.accountReceivable.update({
+                  where: { id: rec.id },
+                  data: { status: 'CANCELADA' },
+                });
               }
             }
-            await tx.accountReceivable.deleteMany({ where: { id: { in: ids }, storeId } });
           } else if (entityType === 'PAYABLE') {
-            await tx.accountPayable.deleteMany({ where: { id: { in: ids }, storeId } });
+            // AccountPayable: apenas cancelar (não há hard delete aqui)
+            const pays = await tx.accountPayable.findMany({
+              where: { id: { in: ids }, storeId },
+            });
+            for (const p of pays) {
+              await PeriodCloseService.assertPeriodIsOpen(storeId, p.dataVencimento, tx, 'exclusão de conta a pagar');
+            }
+            await tx.accountPayable.updateMany({
+              where: { id: { in: ids }, storeId },
+              data: { status: 'CANCELADO' },
+            });
           }
         } else if (action === 'MARK_PAID') {
           if (!walletId) throw new Error('walletId é obrigatório para marcar como pago');
           
           if (entityType === 'RECEIVABLE') {
+            await PeriodCloseService.assertPeriodIsOpen(storeId, new Date(), tx, 'baixa de conta a receber');
+
             const recs = await tx.accountReceivable.findMany({
               where: { id: { in: ids }, storeId, status: { not: 'CANCELADA' } },
               include: {
@@ -1038,6 +1172,8 @@ export class FinanceController {
               });
             }
           } else if (entityType === 'PAYABLE') {
+            await PeriodCloseService.assertPeriodIsOpen(storeId, new Date(), tx, 'baixa de conta a pagar');
+
             const pays = await tx.accountPayable.findMany({ where: { id: { in: ids }, storeId, status: 'PENDENTE' } });
             for (const p of pays) {
               await tx.financialTransaction.create({
@@ -1089,6 +1225,10 @@ export class FinanceController {
       if (isNaN(novaData.getTime())) {
         return res.status(400).json({ message: 'Data inválida' });
       }
+
+      // Governança Contábil: impede alterar vencimento de/para período fechado
+      await PeriodCloseService.assertPeriodIsOpen(storeId, receivable.dataVencimento, undefined, 'edição de conta a receber');
+      await PeriodCloseService.assertPeriodIsOpen(storeId, novaData, undefined, 'edição de conta a receber');
 
       await prisma.accountReceivable.update({
         where: { id },

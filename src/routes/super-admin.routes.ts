@@ -37,7 +37,8 @@ router.get('/team/users', requireStrictSuperAdmin, teamController.listUsers.bind
 router.post('/team/invite', requireStrictSuperAdmin, teamController.inviteUser.bind(teamController));
 router.patch('/team/users/:id/role', requireStrictSuperAdmin, teamController.changeRole.bind(teamController));
 router.patch('/team/users/:id/expiry', requireStrictSuperAdmin, teamController.updateUserExpiry.bind(teamController));
-router.delete('/team/users/:id', requireStrictSuperAdmin, teamController.revokeAccess.bind(teamController));
+router.patch('/team/users/:id/toggle-access', requireStrictSuperAdmin, teamController.toggleAccess.bind(teamController));
+router.delete('/team/users/:id', requireStrictSuperAdmin, teamController.deleteUser.bind(teamController));
 router.get('/team/roles', requireStrictSuperAdmin, teamController.listRoles.bind(teamController));
 router.post('/team/roles', requireStrictSuperAdmin, teamController.createRole.bind(teamController));
 router.put('/team/roles/:id', requireStrictSuperAdmin, teamController.updateRole.bind(teamController));
@@ -179,6 +180,7 @@ router.get('/stores', requireInternalPermission('CONFIGURACOES', 'VIEW'), superA
 router.get('/whatsapp-sessions', requireInternalPermission('CONFIGURACOES', 'VIEW'), superAdminController.listWhatsAppSessions.bind(superAdminController));
 router.post('/whatsapp-sessions', requireInternalPermission('CONFIGURACOES', 'FULL'), superAdminController.createWhatsAppSession.bind(superAdminController));
 router.get('/whatsapp-sessions/:id/qr', requireInternalPermission('CONFIGURACOES', 'FULL'), superAdminController.getWhatsAppQR.bind(superAdminController));
+router.get('/whatsapp-sessions/:id/status', requireInternalPermission('CONFIGURACOES', 'VIEW'), superAdminController.getWhatsAppStatus.bind(superAdminController));
 router.post('/whatsapp-sessions/:id/send', requireInternalPermission('CONFIGURACOES', 'FULL'), superAdminController.sendWhatsAppMessage.bind(superAdminController));
 router.delete('/whatsapp-sessions/:id', requireInternalPermission('CONFIGURACOES', 'FULL'), superAdminController.deleteWhatsAppSession.bind(superAdminController));
 

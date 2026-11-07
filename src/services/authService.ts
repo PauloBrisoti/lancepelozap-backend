@@ -85,6 +85,11 @@ export async function validateUser(
     }).catch(() => {});
   }
 
+  // Conta inativa (arquivada/revogada): bloqueio pós-senha para não revelar existência
+  if (!user.ativo) {
+    throw Object.assign(new Error("Sua conta foi desativada. Contate o administrador."), { status: 403 });
+  }
+
   // Conta self-service sem e-mail confirmado: acesso negado até confirmar.
   // (Exige senha válida para chegar aqui → não é vetor de enumeração.)
   if (user.emailVerificationRequired && !user.emailVerifiedAt) {

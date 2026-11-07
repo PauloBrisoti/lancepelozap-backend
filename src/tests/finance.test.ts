@@ -171,4 +171,26 @@ describe('Cálculos Financeiros', () => {
       });
     expect(res.status).toBe(201);
   });
+
+  it('GET /finance/wallets lista apenas carteiras da loja ativa', async () => {
+    await prisma.wallet.create({
+      data: { storeId: clientA.store.id, nome: 'Conta Teste Wallets', tipo: 'BANCO', saldoAtual: 0 },
+    });
+
+    const otherClient = await createClientWithStore();
+    await prisma.wallet.create({
+      data: { storeId: otherClient.store.id, nome: 'Carteira de Outra Loja', tipo: 'BANCO', saldoAtual: 0 },
+    });
+
+    const res = await request(app)
+      .get('/api/finance/wallets')
+      .set('Cookie', [`authToken=${tokenA}`])
+      .set('x-store-id', clientA.store.id);
+
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body)).toBe(true);
+    expect(res.body.some((w: any) => w.nome === 'Conta Teste Wallets')).toBe(true);
+    expect(res.body.some((w: any) => w.nome === 'Carteira de Outra Loja')).toBe(false);
+    expect(res.body.every((w: any) => w.storeId === undefined)).toBe(true);
+  });
 });

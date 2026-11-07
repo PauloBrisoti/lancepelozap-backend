@@ -158,9 +158,9 @@ export const generatePortalToken = asyncHandler(async (req: Request, res: Respon
     });
 
     // Link curto: JWT assinado que expira em 24h — não fica gravado no banco,
-    // então um link vazado em logs/referer/WhatsApp tem validade limitada
+    // inclui storeId obrigatoriamente para isolamento multi-tenant estrito
     const linkToken = jwt.sign(
-      { type: 'PORTAL_LINK', customerId: customer.id },
+      { type: 'PORTAL_LINK', customerId: customer.id, storeId: customer.storeId },
       getJwtSecret(),
       { expiresIn: '24h' }
     );

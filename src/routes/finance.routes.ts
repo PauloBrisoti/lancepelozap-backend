@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { FinanceController } from '../controllers/FinanceController';
 import { DreController } from '../controllers/DreController';
+import { BankStatementController } from '../controllers/BankStatementController';
 import { requireAuth } from '../middleware/auth';
 import { requireWorkspaceType } from '../middleware/requireWorkspaceType';
 import { requirePlanFeature } from '../middleware/requirePlanFeature';
@@ -52,6 +53,21 @@ const upload = multer({
   },
 });
 
+const statementUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (ext === '.csv' || ext === '.ofx') {
+      cb(null, true);
+      return;
+    }
+    const error: any = new Error('Tipo de arquivo não permitido. Envie um extrato .csv ou .ofx.');
+    error.status = 400;
+    cb(error);
+  },
+});
+
 const router = Router();
 
 router.use(requireAuth);
@@ -62,12 +78,24 @@ router.use(requireWorkspaceType('PJ'));
 
 router.get('/categories', requireStorePermission('gerenciar_financeiro'), FinanceController.listCategories);
 router.post('/categories', requireStorePermission('gerenciar_financeiro'), FinanceController.createCategory);
+router.get('/wallets', requireStorePermission('gerenciar_financeiro'), FinanceController.listWallets);
 
 router.get('/dre', requireStorePermission('gerenciar_financeiro'), requirePlanFeature('financeiro'), DreController.getDre);
 router.get('/dre/export', requireStorePermission('gerenciar_financeiro'), requirePlanFeature('financeiro'), DreController.exportDre);
 router.get('/transactions', requireStorePermission('gerenciar_financeiro'), FinanceController.getTransactions);
 router.post('/transactions', requireStorePermission('gerenciar_financeiro'), requirePlanFeature('financeiro'), upload.single('comprovante'), validateUpload([...IMAGE_KINDS, ...DOCUMENT_KINDS, ...SPREADSHEET_KINDS]), FinanceController.addTransaction);
 router.put('/transactions/:id', requireStorePermission('gerenciar_financeiro'), requirePlanFeature('financeiro'), FinanceController.updateTransaction);
+
+router.get('/bank-statements', requireStorePermission('gerenciar_financeiro'), requirePlanFeature('financeiro'), BankStatementController.listImports);
+router.post('/bank-statements/import', requireStorePermission('gerenciar_financeiro'), requirePlanFeature('financeiro'), statementUpload.single('file'), BankStatementController.importStatement);
+router.get('/bank-statements/:importId/items', requireStorePermission('gerenciar_financeiro'), requirePlanFeature('financeiro'), BankStatementController.listItems);
+router.delete('/bank-statements/:importId', requireStorePermission('gerenciar_financeiro'), requirePlanFeature('financeiro'), BankStatementController.deleteImport);
+router.patch('/bank-statements/items/:itemId', requireStorePermission('gerenciar_financeiro'), requirePlanFeature('financeiro'), BankStatementController.updateItem);
+router.post('/bank-statements/items/:itemId/link', requireStorePermission('gerenciar_financeiro'), requirePlanFeature('financeiro'), BankStatementController.linkItem);
+router.post('/bank-statements/items/:itemId/unlink', requireStorePermission('gerenciar_financeiro'), requirePlanFeature('financeiro'), BankStatementController.unlinkItem);
+router.post('/bank-statements/reconcile', requireStorePermission('gerenciar_financeiro'), requirePlanFeature('financeiro'), BankStatementController.reconcile);
+router.post('/bank-statements/:importId/reconcile', requireStorePermission('gerenciar_financeiro'), requirePlanFeature('financeiro'), BankStatementController.reconcile);
+
 router.get('/receivables', requirePlanFeature('crediario'), FinanceController.getReceivables);
 router.post('/receivables/:id/pay', requireStorePermission('gerenciar_financeiro'), requirePlanFeature('crediario'), validate(payReceivableSchema), FinanceController.payReceivable);
 router.post('/receivables/:id/renegotiate', requireStorePermission('gerenciar_financeiro'), requirePlanFeature('crediario'), validate(renegotiateSchema), FinanceController.renegotiateReceivable);

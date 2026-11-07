@@ -384,13 +384,43 @@ async function handleReadReceipt(_event: any): Promise<void> {
 
 /**
  * Processar mudança de status de conexão
+ * Atualiza o registro no banco quando o WuzAPI notifica mudança de estado.
  */
 async function handleConnectionUpdate(event: any): Promise<void> {
   const status = event.status || event.state || '';
+  const token = event.token || event.userToken || '';
 
   if (status === 'open' || status === 'connected') {
     logger.info('[WuzAPI] Conexão WhatsApp restaurada');
+    if (token) {
+      try {
+        const instance = await prisma.whatsAppInstance.findFirst({ where: { token } });
+        if (instance) {
+          await prisma.whatsAppInstance.update({
+            where: { id: instance.id },
+            data: { status: 'CONNECTED' },
+          });
+          logger.info(`[WuzAPI] Sessão ${instance.instanceName} marcada como CONNECTED via webhook`);
+        }
+      } catch (err: any) {
+        logger.warn(`[WuzAPI] Falha ao atualizar status via webhook: ${err.message}`);
+      }
+    }
   } else if (status === 'close' || status === 'disconnected') {
     logger.warn('[WuzAPI] Conexão WhatsApp perdida');
+    if (token) {
+      try {
+        const instance = await prisma.whatsAppInstance.findFirst({ where: { token } });
+        if (instance) {
+          await prisma.whatsAppInstance.update({
+            where: { id: instance.id },
+            data: { status: 'DISCONNECTED' },
+          });
+          logger.info(`[WuzAPI] Sessão ${instance.instanceName} marcada como DISCONNECTED via webhook`);
+        }
+      } catch (err: any) {
+        logger.warn(`[WuzAPI] Falha ao atualizar status via webhook: ${err.message}`);
+      }
+    }
   }
 }
