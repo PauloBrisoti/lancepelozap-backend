@@ -2680,7 +2680,7 @@ export class SuperAdminController {
     // 3. Connect em background: o WuzAPI aguarda o QR (~10s e pode estourar) —
     //    a resposta não espera; o front faz polling de /:id/qr e /:id/status
     this.qrConnectAt.set(instance.id, Date.now());
-    void wuzapiService.connectSession(token).catch(err => {
+    void wuzapiService.connectSession(token, name).catch(err => {
       logger.error(`[WhatsApp] connect em background falhou (${name}): ${err.message}`);
     });
 
@@ -2710,7 +2710,7 @@ export class SuperAdminController {
       if (Date.now() - last > 12_000) {
         this.qrConnectAt.set(instance.id, Date.now());
         logger.info(`[WhatsApp] QR vazio para ${instance.instanceName}, reconectando em background...`);
-        void wuzapiService.connectSession(instance.token).catch(err => {
+        void wuzapiService.connectSession(instance.token, instance.instanceName).catch(err => {
           logger.error(`[WhatsApp] reconnect em background falhou (${instance.instanceName}): ${err.message}`);
         });
       }

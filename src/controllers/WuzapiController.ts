@@ -43,7 +43,7 @@ export class WuzapiController {
 
       // Connect em background — o WuzAPI aguarda o QR (~10s); a resposta
       // não espera e o QR chega via polling de GET /:id/qr
-      void wuzapiService.connectSession(token).catch(err => {
+      void wuzapiService.connectSession(token, name).catch(err => {
         logger.error(`[WuzAPI] connect em background falhou (${name}): ${err.message}`);
       });
 

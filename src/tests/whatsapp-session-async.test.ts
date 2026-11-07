@@ -23,7 +23,7 @@ describe('Sessão WhatsApp — criação assíncrona (sem bloquear no QR)', () =
   });
 
   it('POST /super-admin/whatsapp-sessions responde 201 pendente mesmo com connect infinito', async () => {
-    const fetchMock = vi.fn((url: unknown) => {
+    const fetchMock = vi.fn((url: unknown, init?: { body?: string }) => {
       const u = String(url);
       if (u.includes('/admin/users')) {
         return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
@@ -46,7 +46,11 @@ describe('Sessão WhatsApp — criação assíncrona (sem bloquear no QR)', () =
     expect(res.body.id).toBeTruthy();
     expect(res.body.qrCode).toBe('');
     expect(fetchMock.mock.calls.some(c => String(c[0]).includes('/admin/users'))).toBe(true);
-    expect(fetchMock.mock.calls.some(c => String(c[0]).includes('/session/connect'))).toBe(true);
+
+    // O connect precisa enviar payload { name } — sem body o WuzAPI responde 400
+    const connectCall = fetchMock.mock.calls.find(c => String(c[0]).includes('/session/connect'));
+    expect(connectCall).toBeTruthy();
+    expect(String(connectCall?.[1]?.body || '')).toContain('super_admin');
 
     await prisma.whatsAppInstance.delete({ where: { id: res.body.id } });
   });

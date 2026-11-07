@@ -96,15 +96,16 @@ class WuzapiService {
 
   /**
    * Reconectar sessão existente (regenera QR)
-   * POST /session/connect
+   * POST /session/connect — o WuzAPI exige payload JSON com o name
    */
-  async connectSession(sessionToken: string): Promise<void> {
+  async connectSession(sessionToken: string, name: string): Promise<void> {
     const resp = await fetch(`${WUZAPI_URL}/session/connect`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'token': sessionToken,
       },
+      body: JSON.stringify({ name }),
     });
 
     if (!resp.ok) {
