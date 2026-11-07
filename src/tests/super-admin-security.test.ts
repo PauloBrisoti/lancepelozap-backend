@@ -53,7 +53,7 @@ describe('Painel admin — escopo por tenant e privilégios de raiz', () => {
 
     await prisma.store.update({
       where: { id: clientA.store.id },
-      data: { whatsappApiKey: 'abcdefghijklmnopqrstuvwxyz' },
+      data: { chavePix: 'abcdefghijklmnopqrstuvwxyz' },
     });
 
     const plan = await prisma.plan.create({
@@ -177,11 +177,11 @@ describe('Painel admin — escopo por tenant e privilégios de raiz', () => {
       });
     expect(res.status).toBe(201);
     expect(JSON.stringify(res.body)).not.toContain('senhaHash');
-    expect(JSON.stringify(res.body)).not.toContain('whatsappApiKey');
+    expect(JSON.stringify(res.body)).not.toContain('pix@teste.app');
     expect(res.body.user).toHaveProperty('email');
   });
 
-  it('listagem de clientes mascara whatsappApiKey', async () => {
+  it('listagem de clientes mascara chavePix', async () => {
     const res = await request(app)
       .get('/api/super-admin/clients')
       .set('Cookie', [`authToken=${rootToken}`]);
@@ -189,7 +189,7 @@ describe('Painel admin — escopo por tenant e privilégios de raiz', () => {
     const found = res.body.find((c: any) => c.id === clientA.client.id);
     const store = found?.controls?.[0]?.stores?.[0];
     expect(store).toBeTruthy();
-    expect(store.whatsappApiKey).toBe('abcd****');
+    expect(store.chavePix).toBe('abc***xyz');
   });
 
   it('listApiKeys exige FULL (VIEW não basta)', async () => {

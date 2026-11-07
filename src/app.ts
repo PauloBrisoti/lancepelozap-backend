@@ -21,6 +21,7 @@ import { brandRouter } from "./routes/brand.routes";
 import { productRouter } from "./routes/product.routes";
 import { saleRouter } from "./routes/sale.routes";
 import financeRoutes from './routes/finance.routes';
+import accountingRoutes from './routes/accounting.routes';
 import dashboardRoutes from './routes/dashboard.routes';
 import subscriptionRoutes from './routes/subscription.routes';
 import { settingsRoutes } from './routes/settings.routes';
@@ -199,8 +200,8 @@ const superAdminLimiter = rateLimitDistributed({
   keyPrefix: 'admin',
   keys: { ip: true, user: true },
   limits: [
-    { windowMs: 60 * 1000, max: limitFor(60) },
-    { windowMs: 60 * 60 * 1000, max: limitFor(400) },
+    { windowMs: 60 * 1000, max: limitFor(120) },
+    { windowMs: 60 * 60 * 1000, max: limitFor(800) },
   ],
   message: 'Muitas requisições administrativas.',
 });
@@ -230,6 +231,24 @@ const uploadLimiter = rateLimitDistributed({
     { windowMs: 60 * 60 * 1000, max: limitFor(40) },
   ],
   message: 'Muitos uploads. Tente novamente.',
+});
+const supportLimiter = rateLimitDistributed({
+  keyPrefix: 'support',
+  keys: { ip: true, user: true },
+  limits: [
+    { windowMs: 60 * 1000, max: limitFor(60) },
+    { windowMs: 60 * 60 * 1000, max: limitFor(400) },
+  ],
+  message: 'Muitas requisições de suporte.',
+});
+const notificationLimiter = rateLimitDistributed({
+  keyPrefix: 'notif',
+  keys: { ip: true, user: true },
+  limits: [
+    { windowMs: 60 * 1000, max: limitFor(60) },
+    { windowMs: 60 * 60 * 1000, max: limitFor(400) },
+  ],
+  message: 'Muitas requisições de notificação.',
 });
 import path from 'path';
 
@@ -379,13 +398,14 @@ app.use('/api/customer-portal', customerPortalRoutes);
   app.use('/api/products', productRouter);
 app.use('/api/sales', saleRouter);
 app.use('/api/finance', financeRoutes);
+app.use('/api/accounting', accountingRoutes);
 app.use('/api/dashboard', heavyQueryLimiter, dashboardRoutes);
 app.use('/api/subscriptions', subscriptionRoutes);
 app.use('/api/super-admin', superAdminLimiter, superAdminRoutes);
 app.use('/api/webhooks', webhookLimiter, webhookRoutes);
 app.use('/api/catalogo', catalogoRoutes);
 app.use('/api/settings', settingsRoutes);
-app.use('/api/support', supportRoutes);
+app.use('/api/support', supportLimiter, supportRoutes);
 app.use('/api/import', importLimiter, importRoutes);
 app.use('/api/product-entries', productEntryRouter);
 app.use('/api/planilha', uploadLimiter, planilhaRoutes);
@@ -412,7 +432,7 @@ app.use('/api/personal', personalFinanceRoutes);
 
 // Notificações do sistema
 app.use('/api/pet', petRoutes);
-app.use('/api/notifications', notificationRoutes);
+app.use('/api/notifications', notificationLimiter, notificationRoutes);
 
 // Admin alias — /api/admin/* same as /api/super-admin/*
 // SEGURANÇA: mesmo rate limit do /api/super-admin (antes ficava sem limite)

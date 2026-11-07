@@ -3,7 +3,7 @@ import request from 'supertest';
 import Redis from 'ioredis';
 import app from '../app';
 import { createClientWithStore } from './factory';
-import { resetRateLimitStoreForTests } from '../lib/rateLimit';
+import { resetRateLimitStoreForTests, limitFor } from '../lib/rateLimit';
 
 const REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
 
@@ -28,7 +28,7 @@ let redisUp = false;
 }
 
 describe.runIf(redisUp)('Rate limiting distribuído — E2E (Redis real)', () => {
-  it('login 51x → 429 com Retry-After e chaves rl:auth-login por IP e e-mail no Redis', async () => {
+  it('login 151x → 429 com Retry-After e chaves rl:auth-login por IP e e-mail no Redis', async () => {
     const client = await createClientWithStore();
     const original = { env: process.env.NODE_ENV, url: process.env.REDIS_URL };
     process.env.NODE_ENV = 'production';
@@ -37,7 +37,7 @@ describe.runIf(redisUp)('Rate limiting distribuído — E2E (Redis real)', () =>
     const r = new Redis(REDIS_URL);
     try {
       let res: any;
-      for (let i = 0; i < 51; i++) {
+      for (let i = 0; i < limitFor(30) + 1; i++) {
         res = await request(app)
           .post('/api/auth/login')
           .send({ email: client.user.email, password: 'senha-errada' });

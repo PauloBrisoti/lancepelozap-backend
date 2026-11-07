@@ -46,7 +46,7 @@ export class CashRegisterController {
 
       // Em CREDIARIO só o sinal entra de fato no caixa; o restante vai para AccountReceivable.
       const salesForBalance = await prisma.sale.findMany({
-        where: { cashRegisterId: cashRegister.id, status: 'FINALIZADA' },
+        where: { cashRegisterId: cashRegister.id, status: 'FINALIZADA', deletedAt: null },
         select: { formaPagamento: true, valorTotalLiquido: true, valorSinal: true },
       });
       const totalRecebidoEmCaixa = salesForBalance.reduce((acc, s) => {

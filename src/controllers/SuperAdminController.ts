@@ -30,12 +30,36 @@ function proximoVencimento(dataVencimento: Date): Date {
   return d;
 }
 
-// SEGURANÇA: devolve as stores de um control com os segredos mascarados
-// chavePix segue crua: a tela de edição de loja do painel admin carrega e salva o valor real.
+function maskSecretString(value?: string | null): string | null {
+  if (!value || typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (trimmed.length <= 6) return '***';
+  return `${trimmed.slice(0, 3)}***${trimmed.slice(-3)}`;
+}
+
+// SEGURANÇA: Mascara chaves Pix, tokens e credenciais confidenciais das lojas
+// Retorna objetos sanitizados para listagens e dashboards administrativos
 function maskStoreSecrets(stores: any[]) {
-  return stores.map((s: any) => ({
-    ...s,
-  }));
+  if (!Array.isArray(stores)) return [];
+  return stores.map((s: any) => {
+    const {
+      chavePix,
+      pixQrCodeUrl,
+      whatsappToken,
+      token,
+      apiSecret,
+      webhookSecret,
+      ...safe
+    } = s || {};
+
+    return {
+      ...safe,
+      chavePix: chavePix ? maskSecretString(chavePix) : null,
+      pixQrCodeUrl: pixQrCodeUrl ? maskSecretString(pixQrCodeUrl) : null,
+      hasPixKey: !!chavePix,
+      hasQrCode: !!pixQrCodeUrl,
+    };
+  });
 }
 
 export class SuperAdminController {
@@ -66,27 +90,91 @@ export class SuperAdminController {
         })
       : await prisma.user.count();
 
-    // MRR do SaaS: Soma das mensalidades das assinaturas ativas/pagas
-    const totalRevenueAggr = await prisma.subscription.aggregate({
-      _sum: { valorMensalidade: true },
-      where: { statusPagamento: 'PAGO', ...(scopedClientId ? { clientId: scopedClientId } : {}) }
-    });
+    // Janelas temporais no fuso da operação
+    const timezone = getTimezone();
+    const agoraZoned = toZonedTime(new Date(), timezone);
+    const ano = agoraZoned.getFullYear();
+    const mes = String(agoraZoned.getMonth() + 1).padStart(2, '0');
+    const dia = String(agoraZoned.getDate()).padStart(2, '0');
+    const inicioMes = fromZonedTime(`${ano}-${mes}-01T00:00:00.000`, timezone);
+    // dataVencimento é @db.Date: compara pelo dia-calendário (UTC), sem fuso
+    const inicioHoje = new Date(`${ano}-${mes}-${dia}T00:00:00.000Z`);
 
-    // Faturas pendentes do SaaS
-    const totalPendingReceivablesAggr = await prisma.invoice.aggregate({
-      _sum: { valorCobrado: true },
-      where: { status: 'PENDENTE', ...(scopedClientId ? { subscription: { clientId: scopedClientId } } : {}) }
-    });
+    // MRR: apenas assinaturas vigentes no período corrente (vencimento >= hoje)
+    // e em status ativo/adimplente. Exclui histórico PAGO já vencido e CANCELADO.
+    const mrrWhere = {
+      statusPagamento: { in: ['PAGO', 'ATIVA'] },
+      dataVencimento: { gte: inicioHoje },
+      ...scopeFilter,
+    };
 
-    // Top Lojas por assinaturas mais caras (ou mantemos quantidade de usuários?)
-    // Vamos pegar os clientes com as assinaturas mais altas
-    const topStoresAggr = await prisma.subscription.groupBy({
-      by: ['clientId'],
-      _sum: { valorMensalidade: true },
-      where: { statusPagamento: 'PAGO', ...(scopedClientId ? { clientId: scopedClientId } : {}) },
-      orderBy: { _sum: { valorMensalidade: 'desc' } },
-      take: 5
-    });
+    const [
+      totalRevenueAggr,
+      totalPendingReceivablesAggr,
+      topStoresAggr,
+      cancelledThisMonth,
+      activeSubscriptions,
+      newActiveSubscriptionsThisMonth,
+    ] = await Promise.all([
+      prisma.subscription.aggregate({
+        _sum: { valorMensalidade: true },
+        where: mrrWhere,
+      }),
+      // Faturas pendentes do SaaS
+      prisma.invoice.aggregate({
+        _sum: { valorCobrado: true },
+        where: {
+          status: 'PENDENTE',
+          ...(scopedClientId ? { subscription: { clientId: scopedClientId } } : {}),
+        },
+      }),
+      // Top clientes por MRR vigente
+      prisma.subscription.groupBy({
+        by: ['clientId'],
+        _sum: { valorMensalidade: true },
+        where: mrrWhere,
+        orderBy: { _sum: { valorMensalidade: 'desc' } },
+        take: 5,
+      }),
+      // Churn: canceladas neste mês que já existiam no início do mês
+      prisma.subscription.count({
+        where: {
+          statusPagamento: 'CANCELADO',
+          updatedAt: { gte: inicioMes },
+          createdAt: { lt: inicioMes },
+          ...scopeFilter,
+        },
+      }),
+      // Ativas hoje (qualquer status que não seja CANCELADO)
+      prisma.subscription.count({
+        where: {
+          statusPagamento: { not: 'CANCELADO' },
+          ...scopeFilter,
+        },
+      }),
+      // Novas assinaturas ativas criadas neste mês (não estavam no início)
+      prisma.subscription.count({
+        where: {
+          statusPagamento: { not: 'CANCELADO' },
+          createdAt: { gte: inicioMes },
+          ...scopeFilter,
+        },
+      }),
+    ]);
+
+    const mrr = Number(totalRevenueAggr._sum.valorMensalidade || 0);
+
+    // Reconstrói o total de ativas no início do mês:
+    // ativasHoje + canceladasNoMês - novasAtivasNoMês
+    const activeAtStartOfMonth = Math.max(
+      0,
+      activeSubscriptions + cancelledThisMonth - newActiveSubscriptionsThisMonth
+    );
+
+    const churnRate =
+      activeAtStartOfMonth > 0
+        ? Math.round((cancelledThisMonth / activeAtStartOfMonth) * 10000) / 100
+        : 0;
 
     const topStoresList = await Promise.all(
       topStoresAggr.map(async (t) => {
@@ -94,7 +182,7 @@ export class SuperAdminController {
         return {
           storeId: t.clientId, // mantendo compatibilidade com frontend por agora
           nomeFantasia: client?.nomeCompleto || 'Desconhecido',
-          faturamentoTotal: t._sum.valorMensalidade || 0
+          faturamentoTotal: Number(t._sum.valorMensalidade || 0),
         };
       })
     );
@@ -103,10 +191,18 @@ export class SuperAdminController {
       totalClients,
       totalStores,
       totalUsers,
-      totalRevenue: totalRevenueAggr._sum.valorMensalidade || 0,
-      totalPendingReceivables: totalPendingReceivablesAggr._sum.valorCobrado || 0,
+      totalRevenue: mrr,
+      mrr,
+      churnRate,
+      churn: {
+        rate: churnRate,
+        cancelledThisMonth,
+        activeAtStartOfMonth,
+      },
+      activeSubscriptions,
+      totalPendingReceivables: Number(totalPendingReceivablesAggr._sum.valorCobrado || 0),
       topStores: topStoresList,
-      status: 'ok'
+      status: 'ok',
     });
   }, "carregar dashboard do super admin");
 
@@ -2601,6 +2697,32 @@ export class SuperAdminController {
     return res.json({ qrCode: qr });
   }, "obter QR WhatsApp");
 
+  getWhatsAppStatus = asyncHandler(async (req: Request, res: Response) => {
+    const id = req.params.id as string;
+    const instance = await prisma.whatsAppInstance.findUnique({ where: { id } });
+    if (!instance) {
+      return res.status(404).json({ error: 'Sessão não encontrada' });
+    }
+
+    const { wuzapiService } = await import('../services/WuzapiService');
+    const status = await wuzapiService.getSessionStatus(instance.token);
+
+    await prisma.whatsAppInstance.update({
+      where: { id: instance.id },
+      data: {
+        status: status.connected ? 'CONNECTED' : 'DISCONNECTED',
+        phone: status.user || instance.phone,
+      },
+    });
+
+    return res.json({
+      id: instance.id,
+      connected: status.connected,
+      status: status.status,
+      phone: status.user || instance.phone,
+    });
+  }, "verificar status WhatsApp");
+
   deleteWhatsAppSession = asyncHandler(async (req: Request, res: Response) => {
     const id = req.params.id as string;
     const session = await prisma.whatsAppInstance.findUnique({ where: { id } });
@@ -2625,6 +2747,7 @@ export class SuperAdminController {
     }
 
     const { wuzapiService } = await import('../services/WuzapiService');
+    logger.info(`[WhatsApp] sendWhatsAppMessage: id=${id}, phone=${phone}, message=${message?.substring(0, 50)}`);
     const result = await wuzapiService.sendText(instance.token, phone, message);
 
     if (!result.success) {

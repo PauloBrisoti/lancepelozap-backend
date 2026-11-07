@@ -109,6 +109,7 @@ model Subscription {
   mpPreapprovalId         String?  @map("mp_preapproval_id")
   mpStatus                String?  @map("mp_status")
   createdAt               DateTime @default(now()) @map("created_at")
+  updatedAt               DateTime @default(now()) @updatedAt @map("updated_at")
 
   client   Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
   plan     Plan      @relation(fields: [planId], references: [id])
@@ -318,6 +319,12 @@ model Store {
   appointments          Appointment[]
   creditCards           CreditCard[]
 
+  periodCloses          PeriodClose[]
+  chartOfAccounts       ChartOfAccount[]
+  journalEntries        JournalEntry[]
+  taxRetentions         TaxRetention[]
+  bankStatementImports  BankStatementImport[]
+
   @@map("stores")
 }
 
@@ -348,6 +355,8 @@ model User {
   emailVerificationRequired Boolean @default(false) @map("email_verification_required")
   emailVerifyToken     String?  @map("email_verify_token")
   emailVerifyTokenExpires DateTime? @map("email_verify_token_expires")
+  inviteToken          String?  @map("invite_token")
+  inviteTokenExpires   DateTime? @map("invite_token_expires")
   lastLogin            DateTime? @map("last_login")
   lastLoginIp          String?  @map("last_login_ip")
   lastActivityAt       DateTime? @map("last_activity_at")
@@ -444,6 +453,10 @@ model Customer {
   aceitaMarketing        Boolean  @default(true) @map("aceita_marketing")
   aceitaLembreteCobranca Boolean  @default(true) @map("aceita_lembrete_cobranca")
   portalToken            String?  @unique @map("portal_token")
+  // Governança de Crédito e Fiado
+  limiteCredito          Decimal  @default(0) @map("limite_credito") @db.Decimal(10, 2)
+  bloqueadoFiado         Boolean  @default(false) @map("bloqueado_fiado")
+  motivoBloqueioFiado    String?  @map("motivo_bloqueio_fiado")
   createdAt              DateTime @default(now()) @map("created_at")
 
   store                 Store                  @relation(fields: [storeId], references: [id], onDelete: Cascade)
@@ -770,6 +783,9 @@ model Sale {
   status            String    @default("FINALIZADA")
   finalizedAt       DateTime? @map("finalized_at")
   observacoes       String?   @db.Text
+  // Soft delete — nunca remover fisicamente para fins de auditoria fiscal (CTN art. 195)
+  deletedAt         DateTime? @map("deleted_at")
+  deletedBy         String?   @map("deleted_by")
 
   store                 Store                  @relation(fields: [storeId], references: [id], onDelete: Cascade)
   cashRegister          CashRegister?          @relation(fields: [cashRegisterId], references: [id])
@@ -871,6 +887,7 @@ model Wallet {
   store                 Store                  @relation(fields: [storeId], references: [id], onDelete: Cascade)
   financialTransactions FinancialTransaction[]
   purchaseOrders        PurchaseOrder[]
+  bankStatementImports  BankStatementImport[]
 
   @@map("wallets")
 }
@@ -921,7 +938,47 @@ model FinancialTransaction {
   customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
   supplier Supplier? @relation(fields: [supplierId], references: [id])
 
+  bankStatementItems BankStatementItem[]
+
   @@map("financial_transactions")
+}
+
+model BankStatementImport {
+  id          String   @id @default(cuid())
+  storeId     String   @map("store_id")
+  walletId    String?  @map("wallet_id")
+  filename    String
+  importedAt  DateTime @default(now()) @map("imported_at")
+  banco       String
+  contentHash String?  @map("content_hash")
+
+  store  Store              @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  wallet Wallet?            @relation(fields: [walletId], references: [id], onDelete: SetNull)
+  items  BankStatementItem[]
+
+  @@index([storeId, importedAt])
+  @@index([storeId, contentHash])
+  @@index([walletId])
+  @@map("bank_statement_imports")
+}
+
+model BankStatementItem {
+  id                     String   @id @default(cuid())
+  importId               String   @map("import_id")
+  data                   DateTime
+  descricao              String
+  valor                  Decimal  @db.Decimal(10, 2)
+  // Tipo: 'CREDITO' | 'DEBITO'
+  tipo                   String
+  conciliado             Boolean  @default(false)
+  financialTransactionId String?  @map("financial_transaction_id")
+
+  import               BankStatementImport   @relation(fields: [importId], references: [id], onDelete: Cascade)
+  financialTransaction FinancialTransaction? @relation(fields: [financialTransactionId], references: [id], onDelete: SetNull)
+
+  @@index([importId, conciliado])
+  @@index([financialTransactionId])
+  @@map("bank_statement_items")
 }
 
 model CashRegister {
@@ -1528,4 +1585,107 @@ model WhatsAppMessageLog {
   @@index([storeId, tipo])
   @@index([referenceType, referenceId])
   @@map("whatsapp_message_logs")
+}
+
+// ============================================================
+// CONTABILIDADE E GOVERNANÇA (FASE 2)
+// ============================================================
+
+model PeriodClose {
+  id         String   @id @default(cuid())
+  storeId    String   @map("store_id")
+  ano        Int
+  mes        Int      // 1 a 12
+  closedAt   DateTime @default(now()) @map("closed_at")
+  closedBy   String   @map("closed_by") // userId
+  observacao String?  @db.Text
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, ano, mes])
+  @@index([storeId, ano, mes])
+  @@map("period_closes")
+}
+
+model ChartOfAccount {
+  id          String   @id @default(cuid())
+  storeId     String?  @map("store_id") // null = padrão global
+  codigo      String   // ex: "1.1.01.001"
+  nome        String   // ex: "Caixa Geral", "Receita de Vendas"
+  // Tipo: 'ATIVO' | 'PASSIVO' | 'PATRIMONIO_LIQUIDO' | 'RECEITA' | 'DESPESA' | 'CUSTO'
+  tipo        String
+  // Natureza: 'DEVEDORA' | 'CREDORA'
+  natureza    String
+  nivel       Int      @default(1)
+  isSintetica Boolean  @default(false) @map("is_sintetica")
+  isDefault   Boolean  @default(false) @map("is_default")
+  ativo       Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  store Store? @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  lines JournalEntryLine[]
+
+  @@unique([storeId, codigo])
+  @@index([storeId, tipo])
+  @@map("chart_of_accounts")
+}
+
+model JournalEntry {
+  id             String   @id @default(cuid())
+  storeId        String   @map("store_id")
+  numero         Int      @default(autoincrement()) @map("numero")
+  dataLancamento DateTime @default(now()) @map("data_lancamento")
+  descricao      String
+  // Origem: 'VENDA' | 'COMPRA' | 'RECEBIMENTO' | 'PAGAMENTO' | 'ESTORNO' | 'MANUAL'
+  origemTipo     String   @map("origem_tipo")
+  origemId       String?  @map("origem_id")
+  criadoPor      String?  @map("criado_por")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  store Store              @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  lines JournalEntryLine[]
+
+  @@index([storeId, dataLancamento])
+  @@index([origemTipo, origemId])
+  @@map("journal_entries")
+}
+
+model JournalEntryLine {
+  id             String  @id @default(cuid())
+  journalEntryId String  @map("journal_entry_id")
+  accountId      String  @map("account_id")
+  // Tipo: 'DEBITO' | 'CREDITO'
+  tipo           String
+  valor          Decimal @db.Decimal(12, 2)
+  historico      String?
+
+  journalEntry JournalEntry   @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
+  account      ChartOfAccount @relation(fields: [accountId], references: [id])
+
+  @@index([journalEntryId])
+  @@index([accountId])
+  @@map("journal_entry_lines")
+}
+
+model TaxRetention {
+  id           String   @id @default(cuid())
+  storeId      String   @map("store_id")
+  // Tipo: 'IRRF' | 'ISS' | 'PIS' | 'COFINS' | 'CSLL' | 'INSS'
+  tipo         String
+  aliquota     Decimal  @db.Decimal(5, 2)
+  valorBase    Decimal  @map("valor_base") @db.Decimal(10, 2)
+  valorRetido  Decimal  @map("valor_retido") @db.Decimal(10, 2)
+  competencia  String   // Ex: "2026-11"
+  dataRetencao DateTime @default(now()) @map("data_retencao")
+  referenceId  String?  @map("reference_id")
+  origemTipo   String   @map("origem_tipo") // 'VENDA' | 'ORDEM_SERVICO' | 'CONTA_PAGAR'
+  status       String   @default("RETIDO")  // 'RETIDO' | 'RECOLHIDO' | 'DISPENSADO'
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId, competencia])
+  @@index([origemTipo, referenceId])
+  @@map("tax_retentions")
 }

@@ -4,6 +4,7 @@ import { prisma } from "../lib/prisma";
 import { hashPassword } from "../utils/password";
 import crypto from "crypto";
 import { asyncHandler } from "../lib/asyncHandler";
+import { sendTeamInvite } from "../services/email.service";
 
 export class InternalTeamController {
   // Lista usuários internos
@@ -11,9 +12,14 @@ export class InternalTeamController {
       // SEGURANÇA: whitelist de campos — nunca expor senhaHash/resetToken/twoFactorSecret
       const users = await prisma.user.findMany({
         where: {
-          OR: [
-            { role: "SUPER_ADMIN" },
-            { internalRoleId: { not: null } }
+          AND: [
+            {
+              OR: [
+                { role: "SUPER_ADMIN" },
+                { internalRoleId: { not: null } }
+              ]
+            },
+            { email: { not: { startsWith: "excluido_" } } }
           ]
         },
         select: {
@@ -32,10 +38,16 @@ export class InternalTeamController {
       res.json(users);
   }, "listar usuários da equipe");
 
-  // Convida um usuário (apenas insere no banco como PENDENTE por enquanto)
+  // Convida um usuário (cria conta pendente e envia e-mail de convite)
   inviteUser = asyncHandler(async (req: Request, res: Response) => {
       const { email, nome, roleId, expiresAt } = req.body;
       
+      logger.info('[INVITE] Dados recebidos:', { email, nome, roleId, expiresAt, bodyKeys: Object.keys(req.body || {}) });
+
+      if (!email || !nome || !roleId) {
+        return res.status(400).json({ error: "Email, nome e papel são obrigatórios." });
+      }
+
       const role = await prisma.internalRole.findUnique({ where: { id: roleId } });
       if (!role) return res.status(404).json({ error: "Papel não encontrado." });
 
@@ -47,6 +59,10 @@ export class InternalTeamController {
       const randomPassword = crypto.randomBytes(20).toString('hex');
       const senhaHash = await hashPassword(randomPassword);
 
+      // Gerar token de convite (expira em 7 dias)
+      const inviteToken = crypto.randomBytes(32).toString('hex');
+      const inviteTokenExpires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
       const user = await prisma.user.create({
         data: {
           email,
@@ -55,7 +71,9 @@ export class InternalTeamController {
           role: role.name === "SUPER_ADMIN" ? "SUPER_ADMIN" : "USER",
           internalRoleId: role.id,
           ativo: false, // ficará false até aceitar
-          expiresAt: expiresAt ? new Date(expiresAt) : null
+          expiresAt: expiresAt ? new Date(expiresAt) : null,
+          inviteToken,
+          inviteTokenExpires
         },
         // SEGURANÇA: devolve apenas campos seguros — nunca o senhaHash
         select: {
@@ -79,8 +97,18 @@ export class InternalTeamController {
         }
       });
 
-      // Em produção, dispararia e-mail aqui.
-      res.json({ message: "Convite enviado (simulado).", user });
+      // Enviar e-mail de convite
+      const baseUrl = process.env.FRONTEND_URL || 'https://app.lancepelozap.com.br';
+      const inviteLink = `${baseUrl}/convite?token=${inviteToken}`;
+      
+      try {
+        await sendTeamInvite(email, nome, role.description || role.name, inviteLink);
+        res.json({ message: "Convite enviado com sucesso!", user });
+      } catch (emailError) {
+        logger.error('[TEAM_INVITE] Falha ao enviar e-mail:', { error: emailError });
+        // Mesmo se o e-mail falhar, o usuário foi criado
+        res.json({ message: "Convite registrado, mas houve falha no envio do e-mail.", user, emailError: "Falha no envio" });
+      }
   }, "convidar usuário");
 
   // Define ou remove a expiração de acesso de um usuário
@@ -156,13 +184,15 @@ export class InternalTeamController {
       res.json({ message: "Papel atualizado com sucesso." });
   }, "alterar papel");
 
-  // Revoga o acesso de um usuário (inativa)
-  revokeAccess = asyncHandler(async (req: Request, res: Response) => {
+  // Alterna o status ativo/inativo de um usuário da equipe
+  toggleAccess = asyncHandler(async (req: Request, res: Response) => {
       const id = req.params.id as string;
       const user = await prisma.user.findUnique({ where: { id } });
       if (!user) return res.status(404).json({ error: "Usuário não encontrado." });
 
-      if (user.role === "SUPER_ADMIN") {
+      const newAtivo = !user.ativo;
+
+      if (!newAtivo && user.role === "SUPER_ADMIN") {
         const adminCount = await prisma.user.count({ where: { role: "SUPER_ADMIN", ativo: true } });
         if (adminCount <= 1) {
           return res.status(400).json({ error: "Não é possível revogar acesso do último Super Admin." });
@@ -171,21 +201,63 @@ export class InternalTeamController {
 
       await prisma.user.update({
         where: { id },
-        data: { ativo: false }
+        data: { ativo: newAtivo }
       });
 
       await prisma.auditLog.create({
         data: {
           userId: req.user!.id,
-          storeId: "admin_internal",
-          acao: "TEAM_ACCESS_REVOKED",
+          storeId: null,
+          acao: newAtivo ? "TEAM_ACCESS_RESTORED" : "TEAM_ACCESS_REVOKED",
           tabelaAfetada: "users",
-          dadosAntigos: { id }
+          dadosAntigos: { id, ativo: user.ativo },
+          dadosNovos: { id, ativo: newAtivo }
         }
       });
 
-      res.json({ message: "Acesso revogado com sucesso." });
-  }, "revogar acesso");
+      res.json({ message: newAtivo ? "Acesso restaurado com sucesso." : "Acesso revogado com sucesso." });
+  }, "alternar acesso");
+
+  // Exclui permanentemente um usuário da equipe (soft delete: desativa + limpa dados sensíveis)
+  deleteUser = asyncHandler(async (req: Request, res: Response) => {
+      const id = req.params.id as string;
+      const user = await prisma.user.findUnique({ where: { id } });
+      if (!user) return res.status(404).json({ error: "Usuário não encontrado." });
+
+      if (user.role === "SUPER_ADMIN" && user.ativo) {
+        const adminCount = await prisma.user.count({ where: { role: "SUPER_ADMIN", ativo: true } });
+        if (adminCount <= 1) {
+          return res.status(400).json({ error: "Não é possível excluir o último Super Admin." });
+        }
+      }
+
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user!.id,
+          storeId: null,
+          acao: "TEAM_USER_DELETED",
+          tabelaAfetada: "users",
+          dadosAntigos: { id, email: user.email, nome: user.nome }
+        }
+      });
+
+      await prisma.user.update({
+        where: { id },
+        data: {
+          ativo: false,
+          nome: "Usuário excluído",
+          email: `excluido_${id}@removed.local`,
+          senhaHash: "REMOVED",
+          inviteToken: null,
+          inviteTokenExpires: null,
+          twoFactorSecret: null,
+          resetToken: null,
+          resetTokenExpiry: null,
+        }
+      });
+
+      res.json({ message: "Usuário excluído com sucesso." });
+  }, "excluir usuário");
 
   // Lista todos os papéis e permissões
   listRoles = asyncHandler(async (_req: Request, res: Response) => {

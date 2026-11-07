@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { createClientWithStore } from './factory';
-import { resetRateLimitStoreForTests } from '../lib/rateLimit';
+import { resetRateLimitStoreForTests, limitFor } from '../lib/rateLimit';
 
 describe('Rate limiting distribuído', () => {
   let client: any;
@@ -13,7 +13,7 @@ describe('Rate limiting distribuído', () => {
 
   it('login: 429 + Retry-After após estourar a janela de 1 minuto', async () => {
     let res: any;
-    for (let i = 0; i < 51; i++) {
+    for (let i = 0; i < limitFor(30) + 1; i++) {
       res = await request(app)
         .post('/api/auth/login')
         .send({ email: client.user.email, password: 'senha-errada' });
@@ -21,11 +21,11 @@ describe('Rate limiting distribuído', () => {
     expect(res.status).toBe(429);
     expect(Number(res.headers['retry-after'])).toBeGreaterThan(0);
     expect(res.body.error).toBeTruthy();
-  }, 30000);
+  }, 60000);
 
   it('forgot-password: 429 após estourar 5/hora por IP', async () => {
     let res: any;
-    for (let i = 0; i < 26; i++) {
+    for (let i = 0; i < limitFor(5) + 1; i++) {
       res = await request(app)
         .post('/api/auth/forgot-password')
         .send({ email: client.user.email });

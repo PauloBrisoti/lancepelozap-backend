@@ -26,19 +26,24 @@ export class CustomerPortalController {
       }
 
       const customerSelect = {
-        id: true, nomeCompleto: true, cpf: true, telefoneWhatsapp: true,
+        id: true, storeId: true, nomeCompleto: true, cpf: true, telefoneWhatsapp: true,
         email: true, enderecoCompleto: true, cep: true, dataNascimento: true,
       } as const;
 
       // 1) Link assinado (gerado pelo sistema — expira em 24h, não fica no banco)
       let customer = null;
       try {
-        const payload = jwt.verify(token, getJwtSecret()) as { type?: string; customerId?: string };
+        const payload = jwt.verify(token, getJwtSecret()) as { type?: string; customerId?: string; storeId?: string };
         if (payload.type === 'PORTAL_LINK' && payload.customerId) {
           customer = await prisma.customer.findUnique({
             where: { id: payload.customerId },
             select: customerSelect,
           });
+
+          // Validação estrita de escopo de tenant se informado no token
+          if (payload.storeId && customer && customer.storeId !== payload.storeId) {
+            customer = null;
+          }
         }
       } catch {
         // token inválido ou expirado — tenta o fallback abaixo
@@ -54,9 +59,9 @@ export class CustomerPortalController {
 
       if (!customer) return res.status(404).json({ message: 'Link inválido ou expirado' });
 
-      // Sessão curta: expira em 30 min e só serve para o portal
+      // Sessão curta: expira em 30 min e vincula estritamente o customerId e storeId
       const sessionToken = jwt.sign(
-        { type: 'PORTAL_SESSION', customerId: customer.id },
+        { type: 'PORTAL_SESSION', customerId: customer.id, storeId: customer.storeId },
         getJwtSecret(),
         { expiresIn: this.SESSION_TTL_SECONDS }
       );
@@ -72,12 +77,14 @@ export class CustomerPortalController {
     if (!sessionToken) return null;
 
     try {
-      const payload = jwt.verify(sessionToken, getJwtSecret()) as { type?: string; customerId?: string };
-      if (payload.type !== 'PORTAL_SESSION' || !payload.customerId) return null;
-      return await prisma.customer.findUnique({
-        where: { id: payload.customerId },
+      const payload = jwt.verify(sessionToken, getJwtSecret()) as { type?: string; customerId?: string; storeId?: string };
+      if (payload.type !== 'PORTAL_SESSION' || !payload.customerId || !payload.storeId) return null;
+
+      // Consulta indexada com chave composta implícita id + storeId para garantia anti-cross-tenant
+      return await prisma.customer.findFirst({
+        where: { id: payload.customerId, storeId: payload.storeId },
         select: {
-          id: true, nomeCompleto: true, cpf: true, telefoneWhatsapp: true,
+          id: true, storeId: true, nomeCompleto: true, cpf: true, telefoneWhatsapp: true,
           email: true, enderecoCompleto: true, cep: true, dataNascimento: true,
         },
       });
@@ -112,7 +119,12 @@ export class CustomerPortalController {
       if (!customer) return res.status(401).json({ message: 'Sessão inválida ou expirada' });
 
       const sales = await prisma.sale.findMany({
-        where: { customerId: customer.id, status: 'FINALIZADA' },
+        where: {
+          customerId: customer.id,
+          storeId: customer.storeId,
+          status: 'FINALIZADA',
+          deletedAt: null,
+        },
         orderBy: { dataVenda: 'desc' },
         select: {
           id: true, dataVenda: true, valorTotalBruto: true, valorDesconto: true,
@@ -134,7 +146,11 @@ export class CustomerPortalController {
       hoje.setHours(0, 0, 0, 0);
 
       const receivables = await prisma.accountReceivable.findMany({
-        where: { customerId: customer.id, status: { not: 'CANCELADA' } },
+        where: {
+          customerId: customer.id,
+          storeId: customer.storeId,
+          status: { not: 'CANCELADA' },
+        },
         orderBy: { dataVencimento: 'asc' },
         select: {
           id: true, dataVencimento: true, valorParcela: true, numeroParcela: true,

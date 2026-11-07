@@ -16,7 +16,7 @@ export class DreController {
 
     // 1. Receita Operacional Bruta
     const salesAggregate = await prisma.sale.aggregate({
-      where: { storeId, status: { not: 'CANCELADA' }, dataVenda: { gte: startDate, lte: endDate } },
+      where: { storeId, status: { not: 'CANCELADA' }, deletedAt: null, dataVenda: { gte: startDate, lte: endDate } },
       _sum: { valorTotalBruto: true, valorDesconto: true, valorTaxasGateway: true, cmvTotal: true }
     });
     const petOrdersAgg = await prisma.petServiceOrder.aggregate({
@@ -42,7 +42,7 @@ export class DreController {
     });
     const aliquotaImposto = Number(store?.aliquotaImposto || 0);
     const salesWithItems = await prisma.sale.findMany({
-      where: { storeId, status: { not: 'CANCELADA' }, dataVenda: { gte: startDate, lte: endDate } },
+      where: { storeId, status: { not: 'CANCELADA' }, deletedAt: null, dataVenda: { gte: startDate, lte: endDate } },
       select: {
         saleItems: {
           select: {
@@ -142,7 +142,7 @@ export class DreController {
     const periodoLabel = `${startDate.toLocaleDateString('pt-BR')} a ${endDate.toLocaleDateString('pt-BR')}`;
 
     const salesAggregate = await prisma.sale.aggregate({
-      where: { storeId, status: { not: 'CANCELADA' }, dataVenda: { gte: startDate, lte: endDate } },
+      where: { storeId, status: { not: 'CANCELADA' }, deletedAt: null, dataVenda: { gte: startDate, lte: endDate } },
       _sum: { valorTotalBruto: true, valorDesconto: true, valorTaxasGateway: true, cmvTotal: true }
     });
 
@@ -157,7 +157,7 @@ export class DreController {
     });
     const aliquotaImposto = Number(storeData?.aliquotaImposto || 0);
     const salesWithItems = await prisma.sale.findMany({
-      where: { storeId, status: { not: 'CANCELADA' }, dataVenda: { gte: startDate, lte: endDate } },
+      where: { storeId, status: { not: 'CANCELADA' }, deletedAt: null, dataVenda: { gte: startDate, lte: endDate } },
       select: {
         saleItems: {
           select: {
