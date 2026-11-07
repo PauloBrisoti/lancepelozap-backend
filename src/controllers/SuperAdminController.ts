@@ -63,6 +63,8 @@ function maskStoreSecrets(stores: any[]) {
 }
 
 export class SuperAdminController {
+  /** Cooldown do último connect disparado em background por sessão (ms) */
+  private readonly qrConnectAt = new Map<string, number>();
 
 
   // ==========================================
@@ -2660,8 +2662,11 @@ export class SuperAdminController {
 
     const { wuzapiService } = await import('../services/WuzapiService');
     const name = storeId ? `store_${storeId}` : 'super_admin';
-    const { token, qr } = await wuzapiService.createSession(name);
 
+    // 1. Usuário no WuzAPI — chamada rápida; falha de conectividade responde aqui
+    const token = await wuzapiService.createUser(name);
+
+    // 2. Registro no banco imediato (estado pendente)
     const instance = await prisma.whatsAppInstance.create({
       data: {
         storeId: storeId || null,
@@ -2672,7 +2677,14 @@ export class SuperAdminController {
       },
     });
 
-    return res.status(201).json({ id: instance.id, qrCode: qr, status: 'QR_PENDING' });
+    // 3. Connect em background: o WuzAPI aguarda o QR (~10s e pode estourar) —
+    //    a resposta não espera; o front faz polling de /:id/qr e /:id/status
+    this.qrConnectAt.set(instance.id, Date.now());
+    void wuzapiService.connectSession(token).catch(err => {
+      logger.error(`[WhatsApp] connect em background falhou (${name}): ${err.message}`);
+    });
+
+    return res.status(201).json({ id: instance.id, qrCode: '', status: 'QR_PENDING' });
   }, "criar sessão WhatsApp");
 
   getWhatsAppQR = asyncHandler(async (req: Request, res: Response) => {
@@ -2684,17 +2696,27 @@ export class SuperAdminController {
 
     const { wuzapiService } = await import('../services/WuzapiService');
 
-    // Tentar obter QR — se vazio, reconectar a sessão para gerar novo QR
-    let qr = await wuzapiService.getQRCode(instance.token);
-    if (!qr) {
-      logger.info(`[WhatsApp] QR vazio para ${instance.instanceName}, reconectando...`);
-      await wuzapiService.connectSession(instance.token);
-      // Aguardar WuzAPI gerar o QR
-      await new Promise(r => setTimeout(r, 3000));
+    // QR rápido: só consulta o WuzAPI. Se vazio, dispara reconexão em
+    // background (cooldown de 12s) — a resposta nunca espera o connect.
+    let qr = '';
+    try {
       qr = await wuzapiService.getQRCode(instance.token);
+    } catch (err: any) {
+      logger.warn(`[WhatsApp] getQR falhou (${instance.instanceName}): ${err.message}`);
     }
 
-    return res.json({ qrCode: qr });
+    if (!qr) {
+      const last = this.qrConnectAt.get(instance.id) ?? 0;
+      if (Date.now() - last > 12_000) {
+        this.qrConnectAt.set(instance.id, Date.now());
+        logger.info(`[WhatsApp] QR vazio para ${instance.instanceName}, reconectando em background...`);
+        void wuzapiService.connectSession(instance.token).catch(err => {
+          logger.error(`[WhatsApp] reconnect em background falhou (${instance.instanceName}): ${err.message}`);
+        });
+      }
+    }
+
+    return res.json({ qrCode: qr, status: instance.status });
   }, "obter QR WhatsApp");
 
   getWhatsAppStatus = asyncHandler(async (req: Request, res: Response) => {

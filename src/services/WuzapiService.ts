@@ -72,14 +72,13 @@ class WuzapiService {
   }
 
   /**
-   * Criar nova sessão WhatsApp (retorna token + QR code)
-   * 1. POST /admin/users — cria o usuário no WuzAPI (admin auth)
-   * 2. POST /session/connect — conecta ao WhatsApp (user auth)
+   * Criar usuário no WuzAPI (admin auth) e devolver o token da sessão.
+   * Chamada rápida — NÃO conecta ao WhatsApp. O connect deve ser disparado
+   * em background pelo chamador (pode bloquear ~10s esperando o QR).
    */
-  async createSession(instanceName: string): Promise<{ token: string; qr: string }> {
+  async createUser(instanceName: string): Promise<string> {
     const userToken = `saas_${instanceName}_${Date.now()}`;
 
-    // 1. Criar usuário no WuzAPI com admin token
     const createResp = await fetch(`${WUZAPI_URL}/admin/users`, {
       method: 'POST',
       headers: this.adminHeaders(),
@@ -92,29 +91,7 @@ class WuzapiService {
     }
 
     logger.info(`[WuzAPI] Usuário criado: ${instanceName}`);
-
-    // 2. Conectar com o token do usuário
-    const connectResp = await fetch(`${WUZAPI_URL}/session/connect`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'token': userToken,
-      },
-      body: JSON.stringify({ name: instanceName }),
-    });
-
-    if (!connectResp.ok) {
-      const text = await connectResp.text();
-      throw new Error(`WuzAPI connect failed (${connectResp.status}): ${text}`);
-    }
-
-    const connectJson = unwrapWuzApi(await connectResp.json());
-    logger.info(`[WuzAPI] Sessão conectando: ${instanceName} (status: ${connectJson.status || connectJson.details})`);
-
-    // Buscar QR code imediatamente
-    const qr = await this.getQRCode(userToken);
-
-    return { token: userToken, qr };
+    return userToken;
   }
 
   /**

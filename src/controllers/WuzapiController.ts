@@ -28,10 +28,9 @@ export class WuzapiController {
         return;
       }
 
-      // Criar sessão via WuzAPI
-      const { token, qr } = await wuzapiService.createSession(name);
+      // Usuário no WuzAPI (rápido) + registro no banco em estado pendente
+      const token = await wuzapiService.createUser(name);
 
-      // Salvar no banco
       const instance = await prisma.whatsAppInstance.create({
         data: {
           storeId,
@@ -42,12 +41,18 @@ export class WuzapiController {
         },
       });
 
+      // Connect em background — o WuzAPI aguarda o QR (~10s); a resposta
+      // não espera e o QR chega via polling de GET /:id/qr
+      void wuzapiService.connectSession(token).catch(err => {
+        logger.error(`[WuzAPI] connect em background falhou (${name}): ${err.message}`);
+      });
+
       logger.info(`[WuzAPI] Sessão criada para store ${storeId}: ${name}`);
 
       res.status(201).json({
         id: instance.id,
         instanceName: name,
-        qrCode: qr,
+        qrCode: '',
         status: 'QR_PENDING',
       });
     } catch (error: any) {
