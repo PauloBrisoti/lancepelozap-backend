@@ -1,0 +1,24 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "America/Sao_Paulo"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "backend"
+    groups:
+      prisma:
+        patterns:
+          - "@prisma/*"
+          - "prisma"
+      types:
+        patterns:
+          - "@types/*"
+    ignore:
+      - dependency-name: "typescript"
+        versions: [">=7.0.0"]
