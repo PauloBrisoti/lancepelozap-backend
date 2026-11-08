@@ -52,14 +52,27 @@ async function main() {
   console.log(`  ✅ Plan: ${plan.nome}`);
 
   // 2. Users
+  const isProduction = process.env.NODE_ENV === 'production';
+  const superAdminEmail = process.env.SUPER_ADMIN_EMAIL;
+  const superAdminPassword = process.env.SUPER_ADMIN_PASSWORD;
+
+  if (isProduction && (!superAdminEmail || !superAdminPassword)) {
+    throw new Error(
+      'Em produção, defina SUPER_ADMIN_EMAIL e SUPER_ADMIN_PASSWORD para rodar o seed.',
+    );
+  }
+
+  const resolvedSuperEmail = superAdminEmail || 'super@lancepelozap.com.br';
+  const resolvedSuperPassword = superAdminPassword || 'super123';
+
   const adminPassword = await hashPassword('admin123');
   const vendedorPassword = await hashPassword('vendedor123');
-  const superPassword = await hashPassword('super123');
+  const superPassword = await hashPassword(resolvedSuperPassword);
 
   const superAdminUser = await prisma.user.create({
     data: {
       nome: 'Super Admin',
-      email: 'super@lancepelozap.com.br',
+      email: resolvedSuperEmail,
       senhaHash: superPassword,
       role: 'SUPER_ADMIN',
     },
@@ -479,11 +492,13 @@ async function main() {
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log('🌱 Seed complete!');
   console.log('');
-  console.log('📧 Credenciais de teste:');
-  console.log('   Super Admin: super@lancepelozap.com.br / super123');
-  console.log('   Admin Loja:  admin@teste.com / admin123');
-  console.log('   Vendedor:    vendedor@teste.com / vendedor123');
-  console.log('   Caixa:       caixa@teste.com / vendedor123');
+  if (!isProduction) {
+    console.log('📧 Credenciais de teste:');
+    console.log(`   Super Admin: ${resolvedSuperEmail} / ${resolvedSuperPassword}`);
+    console.log('   Admin Loja:  admin@teste.com / admin123');
+    console.log('   Vendedor:    vendedor@teste.com / vendedor123');
+    console.log('   Caixa:       caixa@teste.com / vendedor123');
+  }
   console.log('');
   console.log(`🏪 Loja: ${store.nomeFantasia} (${store.id})`);
   console.log(`📦 ${products.length} produtos, ${customers.length} clientes`);
