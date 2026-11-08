@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
-import { toZonedTime, fromZonedTime } from 'date-fns-tz';
+import { fromZonedTime } from 'date-fns-tz';
 import { asyncHandler } from "../lib/asyncHandler";
 import { getTimezone, buildDateRange } from '../lib/dateUtils';
 
@@ -197,9 +197,12 @@ export class CommissionPaymentController {
       const { sellerId, dataFim } = req.body;
       if (!sellerId) return res.status(400).json({ message: 'sellerId é obrigatório' });
 
+      // dataFim (string 'aaaa-mm-dd') = fim do dia no fuso da loja; sem dataFim = agora
+      // (instante puro — NÃO usar toZonedTime aqui: ele desloca pelo fuso do sistema,
+      // e em servidores UTC isso excluiria vendas dos últimos 3h)
       const endDate = dataFim
         ? fromZonedTime(`${dataFim}T23:59:59.999`, getTimezone())
-        : toZonedTime(new Date(), getTimezone());
+        : new Date();
 
       // Find all unpaid commission items for this seller up to dataFim
       const items = await prisma.saleItem.findMany({
