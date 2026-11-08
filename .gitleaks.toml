@@ -1,0 +1,19 @@
+# Configuração gitleaks (auto-detected em ./.gitleaks.toml)
+# Regra custom: URIs de banco/postgres/redis com credenciais embutidas
+# (o detector padrão do gitleaks não cobre postgres://user:pass@).
+title = "gitleaks config"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "db-uri-credentials"
+description = "Database/Redis URI with embedded credentials"
+regex = '''(?i)(?:postgres(?:ql)?|redis):\/\/[^\s:'"]*:[^\s'"${}]{6,}@'''
+tags = ["db", "credential"]
+
+[allowlist]
+description = "Modelos públicos .env.example (placeholders)"
+paths = [
+  '''\.env\.example$''',
+]

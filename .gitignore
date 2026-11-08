@@ -12,6 +12,18 @@ coverage/
 .DS_Store
 node_modules
 
+# Segredos — nunca versionar
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+.npmrc
+.netrc
+credentials.json
+secrets/
+build/
+
 # Duplicatas antigas na raiz (fonte real: src/) — removidas em 99d10b2
 /app.ts
 /server.ts
