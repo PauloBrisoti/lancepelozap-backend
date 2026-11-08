@@ -7,8 +7,10 @@ on:
     branches: [main, master]
 
 env:
-  JWT_SECRET: ci-test-secret
+  JWT_SECRET: ci-only-jwt-secret-not-real
   NODE_ENV: test
+  # Banco efêmero do runner — não é segredo real (container vive só durante o job)
+  TEST_DB_URL: postgresql://saas_admin:ci-only-not-a-secret@127.0.0.1:5432/saas_test?schema=public
 
 jobs:
   backend:
@@ -19,8 +21,8 @@ jobs:
         image: postgres:16-alpine
         env:
           POSTGRES_USER: saas_admin
-          POSTGRES_PASSWORD: ${{ secrets.TEST_DB_PASSWORD }}
-          POSTGRES_DB: saas_db
+          POSTGRES_PASSWORD: ci-only-not-a-secret
+          POSTGRES_DB: saas_test
         ports:
           - 5432:5432
         options: >-
@@ -42,12 +44,12 @@ jobs:
       - name: Generate Prisma Client
         run: npx prisma generate
         env:
-          DATABASE_URL: ${{ secrets.TEST_DB_URL }}
+          DATABASE_URL: ${{ env.TEST_DB_URL }}
 
       - name: Sync Database Schema
         run: npx prisma db push
         env:
-          DATABASE_URL: ${{ secrets.TEST_DB_URL }}
+          DATABASE_URL: ${{ env.TEST_DB_URL }}
 
       - name: TypeScript Check
         run: npx tsc --noEmit
@@ -59,4 +61,4 @@ jobs:
       - name: Run Tests
         run: npx vitest run
         env:
-          DATABASE_URL: ${{ secrets.TEST_DB_URL }}
+          DATABASE_URL: ${{ env.TEST_DB_URL }}
